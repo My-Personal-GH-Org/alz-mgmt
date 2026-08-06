@@ -1,0 +1,104 @@
+"management_groups":
+- "archetypes":
+  - "root_custom"
+  - "sovereign_l1_controls_custom"
+  - "amba_root"
+  "display_name": "Sovereign Landing Zone"
+  "exists": true
+  "id": "alz"
+  "parent_id": null
+- "archetypes":
+  - "platform_custom"
+  "display_name": "Platform"
+  "exists": false
+  "id": "platform"
+  "parent_id": "alz"
+- "archetypes":
+  - "landing_zones_custom"
+  "display_name": "Landing Zones"
+  "exists": false
+  "id": "landingzones"
+  "parent_id": "alz"
+- "archetypes":
+  - "public_custom"
+  "display_name": "Public"
+  "exists": false
+  "id": "public"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "corp_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Corp"
+  "exists": false
+  "id": "corp"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "online_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Online"
+  "exists": false
+  "id": "online"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "local_custom"
+  "display_name": "Local"
+  "exists": false
+  "id": "local"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "corp_custom"
+  - "sovereign_l2_controls_custom"
+  - "sovereign_l3_controls_custom"
+  "display_name": "Confidential Corp"
+  "exists": false
+  "id": "confidential-corp"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "online_custom"
+  - "sovereign_l2_controls_custom"
+  - "sovereign_l3_controls_custom"
+  "display_name": "Confidential Online"
+  "exists": false
+  "id": "confidential-online"
+  "parent_id": "landingzones"
+- "archetypes":
+  - "sandbox_custom"
+  "display_name": "Sandbox"
+  "exists": false
+  "id": "sandbox"
+  "parent_id": "alz"
+- "archetypes":
+  - "security_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Security"
+  "exists": false
+  "id": "security"
+  "parent_id": "platform"
+- "archetypes":
+  - "management_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Management"
+  "exists": false
+  "id": "management"
+  "parent_id": "platform"
+- "archetypes":
+  - "connectivity_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Connectivity"
+  "exists": false
+  "id": "connectivity"
+  "parent_id": "platform"
+- "archetypes":
+  - "identity_custom"
+  - "sovereign_l2_controls_custom"
+  "display_name": "Identity"
+  "exists": false
+  "id": "identity"
+  "parent_id": "platform"
+- "archetypes":
+  - "decommissioned_custom"
+  "display_name": "Decommissioned"
+  "exists": false
+  "id": "decommissioned"
+  "parent_id": "alz"
+"name": "alz_custom"
