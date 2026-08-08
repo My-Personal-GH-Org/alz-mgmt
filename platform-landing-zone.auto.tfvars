@@ -56,14 +56,15 @@ custom_replacements = {
     ddos_protection_plan_enabled = false
 
     # Resource provisioning primary connectivity
-    # Only Private DNS and Bastion remain enabled; gateways, DNS resolver and the NVA sidecar VNet are turned off.
+    # Gateways and DNS resolver are turned off; sidecar VNet enabled as a workaround for an
+    # avm-ptn-alz-connectivity-virtual-wan v0.16.1 bug (Invalid index in locals.dns.tf when disabled).
     primary_virtual_network_gateway_express_route_enabled = false
     primary_virtual_network_gateway_vpn_enabled           = false
     primary_private_dns_zones_enabled                     = true
     primary_private_dns_auto_registration_zone_enabled    = true
     primary_private_dns_resolver_enabled                  = false
     primary_bastion_enabled                               = true
-    primary_sidecar_virtual_network_enabled               = false
+    primary_sidecar_virtual_network_enabled               = true
 
     # AMBA (Azure Monitoring Baseline Alerts) resource naming
     amba_resource_group_name                 = "rg-amba-$${starter_location_01}"
