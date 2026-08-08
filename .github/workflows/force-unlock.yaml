@@ -1,0 +1,57 @@
+---
+name: "99 [MANUAL] Force-Unlock Stuck Terraform State Lock"
+on:
+  workflow_dispatch:
+    inputs:
+      lock_id:
+        description: 'Terraform state Lock ID (from the "Error acquiring the state lock" message)'
+        required: true
+        type: string
+      terraform_cli_version:
+        description: 'Terraform CLI Version'
+        required: true
+        default: '1.14.9'
+        type: string
+
+jobs:
+  force_unlock:
+    name: Force Unlock Terraform State
+    runs-on:
+      self-hosted
+    environment: alz-mgmt-plan
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_CLIENT_ID: "${{ vars.AZURE_CLIENT_ID }}"
+      ARM_SUBSCRIPTION_ID: "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+      ARM_TENANT_ID: "${{ vars.AZURE_TENANT_ID }}"
+      ARM_USE_AZUREAD: true
+      ARM_USE_OIDC: true
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+          terraform_version: ${{ inputs.terraform_cli_version }}
+
+      - name: Terraform Init
+        run: |
+          terraform \
+          -chdir="." \
+          init \
+          -backend-config="resource_group_name=${{vars.BACKEND_AZURE_RESOURCE_GROUP_NAME}}" \
+          -backend-config="storage_account_name=${{vars.BACKEND_AZURE_STORAGE_ACCOUNT_NAME}}" \
+          -backend-config="container_name=${{vars.BACKEND_AZURE_STORAGE_ACCOUNT_CONTAINER_NAME}}" \
+          -backend-config="key=terraform.tfstate"
+
+      - name: Terraform Force Unlock
+        run: |
+          terraform \
+          -chdir="." \
+          force-unlock \
+          -force \
+          "${{ inputs.lock_id }}"
