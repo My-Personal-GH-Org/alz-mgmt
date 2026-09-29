@@ -234,6 +234,7 @@ foreach ($mgId in $allMgIds) {
     $assignments = Get-AzPolicyAssignment -Scope $scope | Where-Object {
         $_.Scope -eq $scope -and $_.IdentityType -and $_.IdentityType -ne 'None'
     }
+    Write-Notice "Found $($assignments.Count) policy assignment(s) with a managed identity at this scope"
 
     foreach ($assignment in $assignments) {
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.

@@ -31,7 +31,7 @@ permissions:
 jobs:
   remediate:
     runs-on: self-hosted   # match whatever your plan/apply jobs already use
-    environment: alz-mgmt-apply   # reuse the Apply UMI - already has Owner at root MG
+    environment: alz-mgmt-policy-sweep   # separate, no-approval environment - see FIC note below
     steps:
       - uses: actions/checkout@v4
 
