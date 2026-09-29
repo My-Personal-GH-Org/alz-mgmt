@@ -43,6 +43,9 @@ param(
 
 # --- GitHub Actions-aware logging helpers ---
 $script:InGitHubActions = $env:GITHUB_ACTIONS -eq 'true'
+# Tracks whether any operation failed, so the script can exit non-zero even though each
+# failure is caught individually to let the rest of the sweep continue.
+$script:HadFailures = $false
 
 function Write-LogGroupStart {
     param([string]$Title)
@@ -158,6 +161,7 @@ function Ensure-RoleAssignments {
                     Write-Notice "$label -> assigned role $reqGuid at $($req.Scope)"
                 } catch {
                     Write-Err "$label -> FAILED to assign role $reqGuid at $($req.Scope) - $($_.Exception.Message)"
+                    $script:HadFailures = $true
                 }
             }
         }
@@ -176,8 +180,13 @@ function Invoke-Remediation {
         if ($nonCompliant) {
             Write-Notice "$label has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
             if (-not $WhatIf) {
-                Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
-                    -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId | Out-Null
+                try {
+                    Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
+                        -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Err "$label -> FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                    $script:HadFailures = $true
+                }
             }
         }
         return
@@ -191,9 +200,14 @@ function Invoke-Remediation {
     foreach ($refGroup in $nonCompliantRefs) {
         Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
         if (-not $WhatIf) {
-            Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
-                -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId `
-                -PolicyDefinitionReferenceId $refGroup.Name | Out-Null
+            try {
+                Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
+                    -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId `
+                    -PolicyDefinitionReferenceId $refGroup.Name -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Err "$label member policy '$($refGroup.Name)' -> FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                $script:HadFailures = $true
+            }
         }
     }
 }
@@ -231,4 +245,12 @@ foreach ($mgId in $allMgIds) {
     }
 
     Write-LogGroupEnd
+}
+
+# Fail the run explicitly if anything failed, even though each failure was caught individually
+# so the rest of the sweep could still complete - otherwise the process exits 0 and GitHub
+# Actions shows a green run despite a real error having occurred.
+if ($script:HadFailures) {
+    Write-Err "One or more operations failed during the sweep - see warnings/errors above."
+    exit 1
 }
