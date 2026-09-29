@@ -247,6 +247,9 @@ foreach ($mgId in $allMgIds) {
     }
     Write-Notice "Found $($assignments.Count) policy assignment(s) with a managed identity at this scope"
 
+    $needsAction = New-Object System.Collections.Generic.List[string]
+    $noActionNeeded = New-Object System.Collections.Generic.List[string]
+
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
         $foundIssue = $false
@@ -258,9 +261,23 @@ foreach ($mgId in $allMgIds) {
 
         if (Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId) { $foundIssue = $true }
 
-        if (-not $foundIssue) {
+        if ($foundIssue) {
+            $needsAction.Add($label)
+        } else {
             Write-Notice "$label - all required role assignments present, no non-compliant resources found; nothing to do"
+            $noActionNeeded.Add($label)
         }
+    }
+
+    Write-Notice "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($noActionNeeded.Count) need no action"
+
+    if ($needsAction.Count -gt 0) {
+        Write-Notice "-- Assignments needing action --"
+        foreach ($item in $needsAction) { Write-Notice "  $item" }
+    }
+    if ($noActionNeeded.Count -gt 0) {
+        Write-Notice "-- Assignments needing no action --"
+        foreach ($item in $noActionNeeded) { Write-Notice "  $item" }
     }
 
     Write-LogGroupEnd
