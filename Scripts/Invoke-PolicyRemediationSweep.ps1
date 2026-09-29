@@ -5,7 +5,11 @@
   (child MGs are already confirmed to get correct role assignments via Terraform/alzlib).
 
 .PARAMETER RootManagementGroupId
+<<<<<<< HEAD
   The top-level MG to sweep (e.g. "MG-AzLz-Acclrtr"). Children are discovered recursively -
+=======
+  The top-level MG to sweep (e.g. "MG-AzLz-Acclrtr"). Child MG's are discovered recursively -
+>>>>>>> 049828e1b2a837dbf0e504879ad8ad958e24b382
   new child MGs are picked up automatically, no code change needed.
 
 .PARAMETER TargetScope
