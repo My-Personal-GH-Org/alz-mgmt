@@ -178,8 +178,10 @@ function Invoke-Remediation {
         $nonCompliant = Get-AzPolicyState -ManagementGroupName $ManagementGroupId `
             -Filter "PolicyAssignmentId eq '$($Assignment.Id)' and ComplianceState eq 'NonCompliant'"
         if ($nonCompliant) {
-            Write-Notice "$label has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
-            if (-not $WhatIf) {
+            if ($WhatIf) {
+                Write-Notice "$label has non-compliant resources at $ManagementGroupId -> would start a remediation task (WhatIf - no change made)"
+            } else {
+                Write-Notice "$label has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
                 try {
                     Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                         -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId -ErrorAction Stop | Out-Null
@@ -198,8 +200,10 @@ function Invoke-Remediation {
         Group-Object PolicyDefinitionReferenceId
 
     foreach ($refGroup in $nonCompliantRefs) {
-        Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
-        if (-not $WhatIf) {
+        if ($WhatIf) {
+            Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId -> would start a remediation task (WhatIf - no change made)"
+        } else {
+            Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
             try {
                 Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                     -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId `
