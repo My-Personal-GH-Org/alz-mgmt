@@ -53,4 +53,4 @@ jobs:
           if ('${{ github.event.inputs.dry_run || 'true' }}' -eq 'true') {
             $params.WhatIf = $true
           }
-          ./scripts/Invoke-PolicyRemediationSweep.ps1 @params
+          ./Scripts/Invoke-PolicyRemediationSweep.ps1 @params
