@@ -17,7 +17,7 @@ on:
         options:
           - "All"
           - "RootOnly"
-          - "ChildrenOnly"
+          - "ChildrenOnly"  # child MGs only, skip the root MG
       dry_run:
         description: "WhatIf - report only, make no changes"
         required: true
