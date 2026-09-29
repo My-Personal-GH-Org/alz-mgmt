@@ -49,26 +49,26 @@ $script:HadFailures = $false
 
 function Write-LogGroupStart {
     param([string]$Title)
-    if ($script:InGitHubActions) { Write-Output "::group::$Title" } else { Write-Output "=== $Title ===" }
+    if ($script:InGitHubActions) { Write-Host "::group::$Title" } else { Write-Host "=== $Title ===" }
 }
 
 function Write-LogGroupEnd {
-    if ($script:InGitHubActions) { Write-Output "::endgroup::" }
+    if ($script:InGitHubActions) { Write-Host "::endgroup::" }
 }
 
 function Write-Notice {
     param([string]$Message)
-    if ($script:InGitHubActions) { Write-Output "::notice::$Message" } else { Write-Output "  $Message" }
+    if ($script:InGitHubActions) { Write-Host "::notice::$Message" } else { Write-Host "  $Message" }
 }
 
 function Write-Warn {
     param([string]$Message)
-    if ($script:InGitHubActions) { Write-Output "::warning::$Message" } else { Write-Output "  $Message" }
+    if ($script:InGitHubActions) { Write-Host "::warning::$Message" } else { Write-Host "  $Message" }
 }
 
 function Write-Err {
     param([string]$Message)
-    if ($script:InGitHubActions) { Write-Output "::error::$Message" } else { Write-Output "  $Message" }
+    if ($script:InGitHubActions) { Write-Host "::error::$Message" } else { Write-Host "  $Message" }
 }
 
 function Get-RequiredRoleAssignments {
@@ -138,9 +138,10 @@ function Ensure-RoleAssignments {
     param($Assignment)
 
     $principalId = $Assignment.IdentityPrincipalId
-    if (-not $principalId) { return }
+    if (-not $principalId) { return $false }
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+    $foundMissing = $false
 
     foreach ($req in (Get-RequiredRoleAssignments -Assignment $Assignment)) {
         # Compare just the role definition GUID, not the full string - the policy definition's stored
@@ -151,6 +152,7 @@ function Ensure-RoleAssignments {
             Where-Object { ($_.RoleDefinitionId -split '/')[-1] -ieq $reqGuid }
 
         if (-not $existing) {
+            $foundMissing = $true
             Write-Warn "$label is missing a role assignment its managed identity needs before remediation can work: role $($req.RoleDefinitionId) at scope $($req.Scope)"
             if ($WhatIf) {
                 Write-Notice "$label -> would assign (WhatIf - no change made)"
@@ -166,6 +168,8 @@ function Ensure-RoleAssignments {
             }
         }
     }
+
+    $foundMissing
 }
 
 function Invoke-Remediation {
@@ -190,8 +194,9 @@ function Invoke-Remediation {
                     $script:HadFailures = $true
                 }
             }
+            return $true
         }
-        return
+        return $false
     }
 
     # Initiative: only remediate member policy references that actually have non-compliant resources
@@ -214,6 +219,8 @@ function Invoke-Remediation {
             }
         }
     }
+
+    $nonCompliantRefs.Count -gt 0
 }
 
 # --- Main ---
@@ -241,12 +248,19 @@ foreach ($mgId in $allMgIds) {
     Write-Notice "Found $($assignments.Count) policy assignment(s) with a managed identity at this scope"
 
     foreach ($assignment in $assignments) {
+        $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
+        $foundIssue = $false
+
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.
         if ($mgId -eq $RootManagementGroupId) {
-            Ensure-RoleAssignments -Assignment $assignment
+            if (Ensure-RoleAssignments -Assignment $assignment) { $foundIssue = $true }
         }
 
-        Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId
+        if (Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId) { $foundIssue = $true }
+
+        if (-not $foundIssue) {
+            Write-Notice "$label - all required role assignments present, no non-compliant resources found; nothing to do"
+        }
     }
 
     Write-LogGroupEnd
