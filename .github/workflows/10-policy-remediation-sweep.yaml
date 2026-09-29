@@ -47,10 +47,10 @@ jobs:
         # workflow_dispatch inputs are empty on schedule-triggered runs, hence the fallback defaults below.
         run: |
           $params = @{
-            RootManagementGroupId = '${{ github.event.inputs.root_management_group_id || "MG-AzLz-Acclrtr" }}'
-            TargetScope            = '${{ github.event.inputs.target_scope || "All" }}'
+            RootManagementGroupId = '${{ github.event.inputs.root_management_group_id || 'MG-AzLz-Acclrtr' }}'
+            TargetScope            = '${{ github.event.inputs.target_scope || 'All' }}'
           }
-          if ('${{ github.event.inputs.dry_run || "true" }}' -eq 'true') {
+          if ('${{ github.event.inputs.dry_run || 'true' }}' -eq 'true') {
             $params.WhatIf = $true
           }
           ./scripts/Invoke-PolicyRemediationSweep.ps1 @params
