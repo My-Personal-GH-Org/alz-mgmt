@@ -126,6 +126,32 @@ function Get-RoleDisplayName {
     $display
 }
 
+$script:PrincipalNameCache = @{}
+
+function Get-PrincipalDisplayName {
+    <#
+      Resolves a managed identity's object/principal ID to "Friendly Name (guid)" via its AAD
+      service principal (managed identities register as service principals), e.g.
+      "id-policysweep-sub (e5365c0d-e346-4396-bdcb-50984e9cb3c4)" - falls back to the bare GUID if
+      the lookup fails. Cached per-run since the sweep UMI's own identity repeats across every
+      assignment it fixes.
+    #>
+    param([string]$PrincipalId)
+
+    if ($script:PrincipalNameCache.ContainsKey($PrincipalId)) { return $script:PrincipalNameCache[$PrincipalId] }
+
+    $display = $PrincipalId
+    try {
+        $sp = Get-AzADServicePrincipal -ObjectId $PrincipalId -ErrorAction Stop
+        if ($sp -and $sp.DisplayName) { $display = "$($sp.DisplayName) ($PrincipalId)" }
+    } catch {
+        # Leave $display as the bare GUID - still usable, just not resolved to a friendly name.
+    }
+
+    $script:PrincipalNameCache[$PrincipalId] = $display
+    $display
+}
+
 function Get-RequiredRoleAssignments {
     <#
       Mirrors alzlib's own logic (deployment/managementgroup.go):
@@ -202,6 +228,7 @@ function Ensure-RoleAssignments {
     if (-not $principalId) { return [pscustomobject]@{ FoundMissing = $false; Actions = @() } }
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+    $miName = Get-PrincipalDisplayName -PrincipalId $principalId
     $foundMissing = $false
     $actions = New-Object System.Collections.Generic.List[string]
 
@@ -216,21 +243,21 @@ function Ensure-RoleAssignments {
         if (-not $existing) {
             $foundMissing = $true
             $roleName = Get-RoleDisplayName -RoleDefinitionId $req.RoleDefinitionId
-            Write-Warn "$label is missing a role assignment its managed identity needs before remediation can work: role $roleName at scope $($req.Scope)"
+            Write-Warn "$label is missing a role assignment its managed identity '$miName' needs before remediation can work: role '$roleName' at scope $($req.Scope)"
 
             if ($WhatIf) {
-                $msg = "WOULD FIX: assign $roleName at $($req.Scope) (WhatIf - no change made)"
+                $msg = "WOULD FIX: assign '$roleName' at $($req.Scope) to managed identity '$miName' (WhatIf - no change made)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
             } else {
                 try {
                     New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
-                    $msg = "FIXED: assigned $roleName at $($req.Scope)"
+                    $msg = "FIXED: assigned '$roleName' at $($req.Scope) to managed identity '$miName'"
                     $actions.Add($msg)
                     Write-ColorLine -Color Green "$label -> $msg"
                     $script:FixesThisRun.Add("$label -> $msg")
                 } catch {
-                    $msg = "FAILED to assign $roleName at $($req.Scope) - $($_.Exception.Message)"
+                    $msg = "FAILED to assign '$roleName' at $($req.Scope) to managed identity '$miName' - $($_.Exception.Message)"
                     $actions.Add($msg)
                     Write-Err "$label -> $msg"
                     $script:HadFailures = $true
