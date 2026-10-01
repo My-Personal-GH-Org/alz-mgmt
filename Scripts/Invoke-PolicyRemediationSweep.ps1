@@ -435,14 +435,14 @@ $grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNee
 Write-Host ""
 if ($WhatIf) {
     if ($script:WouldFixThisRun.Count -gt 0) {
-        Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): would fix $($script:WouldFixThisRun.Count) item(s) - no changes were made ====="
+        Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): would apply $($script:WouldFixThisRun.Count) action(s) across $grandNeedsAction policy assignment(s) - no changes were made ====="
         foreach ($f in $script:WouldFixThisRun) { Write-ColorLine -Color Yellow "  * $f" }
     } else {
         Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): nothing would need fixing this run ====="
     }
 } else {
     if ($script:FixesThisRun.Count -gt 0) {
-        Write-ColorLine -Color Bold "===== Fixed this run ($($script:FixesThisRun.Count)) ====="
+        Write-ColorLine -Color Bold "===== Fixed this run: $($script:FixesThisRun.Count) action(s) across $grandNeedsAction policy assignment(s) ====="
         foreach ($fix in $script:FixesThisRun) { Write-ColorLine -Color Green "  * $fix" }
     } else {
         Write-ColorLine -Color Bold "===== Nothing needed fixing this run ====="
@@ -465,14 +465,16 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
 
     if ($WhatIf) {
         if ($script:WouldFixThisRun.Count -gt 0) {
-            $summaryLines.Add("**Dry run (WhatIf) - would fix $($script:WouldFixThisRun.Count) item(s); no changes were made:**")
+            $summaryLines.Add("**Dry run (WhatIf) - would apply $($script:WouldFixThisRun.Count) action(s) across $grandNeedsAction policy assignment(s); no changes were made:**")
+            $summaryLines.Add("*(an assignment can need more than one action, e.g. an initiative with several non-compliant member policies - that's why the action count can be higher than the assignment count below)*")
             foreach ($f in $script:WouldFixThisRun) { $summaryLines.Add("- $f") }
         } else {
             $summaryLines.Add('**Dry run (WhatIf) - nothing would need fixing this run.**')
         }
     } else {
         if ($script:FixesThisRun.Count -gt 0) {
-            $summaryLines.Add("**Fixed this run ($($script:FixesThisRun.Count)):**")
+            $summaryLines.Add("**Fixed this run: $($script:FixesThisRun.Count) action(s) across $grandNeedsAction policy assignment(s):**")
+            $summaryLines.Add("*(an assignment can need more than one action, e.g. an initiative with several non-compliant member policies - that's why the action count can be higher than the assignment count below)*")
             foreach ($fix in $script:FixesThisRun) { $summaryLines.Add("- $fix") }
         } else {
             $summaryLines.Add('**Nothing needed fixing this run.**')
