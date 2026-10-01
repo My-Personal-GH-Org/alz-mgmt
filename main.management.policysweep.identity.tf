@@ -33,12 +33,15 @@ resource "azurerm_role_assignment" "policysweep_user_access_administrator" {
   role_definition_name = "User Access Administrator"
   principal_id         = azurerm_user_assigned_identity.policysweep.principal_id
 
-  # Microsoft's official "Allow most roles, but don't allow others to assign roles" template:
-  # this identity can grant/remove any role EXCEPT Owner, RBAC Administrator or User Access Administrator -
-  # stops it from ever escalating itself or anyone else to a privileged role-assignment-granting role.
+  # Combines Microsoft's official "Allow most roles, but don't allow others to assign roles" template
+  # (blocks granting/removing Owner, RBAC Administrator or User Access Administrator) with a principal-type
+  # constraint on the GRANT side (blocks "Constrain roles and principal types" template) - this identity can
+  # only grant roles to Managed Identities/Service Principals (ARM's PrincipalType for both is "ServicePrincipal",
+  # there's no separate "ManagedIdentity" value), never to a User or Group. Delete-side stays unrestricted by
+  # principal type - it must still be able to remove ANY privileged role assignment, not just ones it granted.
   condition_version = "2.0"
   condition         = <<-EOT
-    ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, f58310d9-a9f6-439a-9e8d-f62e7b41a168, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9}))
+    ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, f58310d9-a9f6-439a-9e8d-f62e7b41a168, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9} AND @Request[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {'ServicePrincipal'}))
     AND
     ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {8e3af657-a8ff-443c-a75c-2fe8c4bcb635, f58310d9-a9f6-439a-9e8d-f62e7b41a168, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9}))
   EOT
