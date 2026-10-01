@@ -23,6 +23,12 @@
   run gets collapsible per-MG sections and surfaces in the Annotations panel. Falls back to
   plain text automatically when run locally.
 
+  Additional log readability (GitHub Actions only): the "needs action" vs "no action" recap
+  lists are ANSI colour-coded (yellow vs green) so they're easy to tell apart at a glance in a
+  long log, role definition GUIDs are resolved to friendly names (e.g. "Resource Policy
+  Contributor") wherever they're printed, and a short markdown table is written to the run's
+  Summary tab ($env:GITHUB_STEP_SUMMARY) so the headline result doesn't require scrolling logs.
+
   Property names below are confirmed against Az.Resources 10.2.0's actual (flattened) output -
   Get-AzPolicyAssignment returns .Scope, .PolicyDefinitionId, .IdentityType, .IdentityPrincipalId, .Id
   directly on the object, NOT nested under .Properties/.Identity as raw ARM JSON would suggest.
@@ -69,6 +75,51 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     if ($script:InGitHubActions) { Write-Host "::error::$Message" } else { Write-Host "  $Message" }
+}
+
+function Write-ColorLine {
+    <#
+      Plain ANSI-coloured Write-Host for display-only emphasis (deliberately NOT a GitHub workflow
+      command, so it doesn't add extra entries to the Annotations panel the way ::warning::/::error::
+      do - those are reserved for genuine problems raised inline during processing). GitHub Actions'
+      log viewer renders ANSI colour natively; falls back to plain text outside Actions.
+    #>
+    param(
+        [string]$Message,
+        [ValidateSet('Green', 'Yellow', 'Red', 'Cyan', 'Bold')]
+        [string]$Color = 'Cyan'
+    )
+    if (-not $script:InGitHubActions) { Write-Host $Message; return }
+
+    $codes = @{ Green = '32'; Yellow = '33'; Red = '31'; Cyan = '36'; Bold = '1' }
+    Write-Host "$([char]27)[$($codes[$Color])m$Message$([char]27)[0m"
+}
+
+$script:RoleNameCache = @{}
+
+function Get-RoleDisplayName {
+    <#
+      Resolves a role definition GUID (or full resource ID) to "Friendly Name (guid)", e.g.
+      "Resource Policy Contributor (36243c78-bf99-498c-9df9-86d9f8d28608)" - falls back to the
+      bare GUID if the lookup fails (transient API error, custom role deleted, etc.) so the guid
+      is still there to cross-reference in the Portal even when the name can't be resolved.
+      Cached per-run since the same handful of roleDefinitionIds repeat across every assignment.
+    #>
+    param([string]$RoleDefinitionId)
+
+    $guid = ($RoleDefinitionId -split '/')[-1]
+    if ($script:RoleNameCache.ContainsKey($guid)) { return $script:RoleNameCache[$guid] }
+
+    $display = $guid
+    try {
+        $def = Get-AzRoleDefinition -Id $guid -ErrorAction Stop
+        if ($def -and $def.Name) { $display = "$($def.Name) ($guid)" }
+    } catch {
+        # Leave $display as the bare GUID - still usable, just not resolved to a friendly name.
+    }
+
+    $script:RoleNameCache[$guid] = $display
+    $display
 }
 
 function Get-RequiredRoleAssignments {
@@ -153,16 +204,17 @@ function Ensure-RoleAssignments {
 
         if (-not $existing) {
             $foundMissing = $true
-            Write-Warn "$label is missing a role assignment its managed identity needs before remediation can work: role $($req.RoleDefinitionId) at scope $($req.Scope)"
+            $roleName = Get-RoleDisplayName -RoleDefinitionId $req.RoleDefinitionId
+            Write-Warn "$label is missing a role assignment its managed identity needs before remediation can work: role $roleName at scope $($req.Scope)"
             if ($WhatIf) {
-                Write-Notice "$label -> would assign (WhatIf - no change made)"
+                Write-Notice "$label -> would assign $roleName (WhatIf - no change made)"
             } else {
-                Write-Notice "$label -> assigning role $reqGuid at $($req.Scope)..."
+                Write-Notice "$label -> assigning $roleName at $($req.Scope)..."
                 try {
                     New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
-                    Write-Notice "$label -> assigned role $reqGuid at $($req.Scope)"
+                    Write-ColorLine -Color Green "$label -> assigned $roleName at $($req.Scope)"
                 } catch {
-                    Write-Err "$label -> FAILED to assign role $reqGuid at $($req.Scope) - $($_.Exception.Message)"
+                    Write-Err "$label -> FAILED to assign $roleName at $($req.Scope) - $($_.Exception.Message)"
                     $script:HadFailures = $true
                 }
             }
@@ -225,6 +277,9 @@ function Invoke-Remediation {
 
 # --- Main ---
 
+# Collects one row per MG so the end-of-run grand total / Job Summary doesn't need a second pass.
+$script:AllMgResults = New-Object System.Collections.Generic.List[object]
+
 # Recursively discover every MG under root - new child MGs are picked up automatically.
 $allMgIds = @($RootManagementGroupId)
 $allMgIds += (Get-AzManagementGroup -GroupId $RootManagementGroupId -Expand -Recurse).Children |
@@ -264,23 +319,70 @@ foreach ($mgId in $allMgIds) {
         if ($foundIssue) {
             $needsAction.Add($label)
         } else {
-            Write-Notice "$label - all required role assignments present, no non-compliant resources found; nothing to do"
+            Write-ColorLine -Color Green "$label - all required role assignments present, no non-compliant resources found; nothing to do"
             $noActionNeeded.Add($label)
         }
     }
 
-    Write-Notice "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($noActionNeeded.Count) need no action"
+    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($noActionNeeded.Count) need no action"
 
     if ($needsAction.Count -gt 0) {
-        Write-Notice "-- Assignments needing action --"
-        foreach ($item in $needsAction) { Write-Notice "  $item" }
+        Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
+        foreach ($item in $needsAction) { Write-ColorLine -Color Yellow "  * $item" }
     }
     if ($noActionNeeded.Count -gt 0) {
-        Write-Notice "-- Assignments needing no action --"
-        foreach ($item in $noActionNeeded) { Write-Notice "  $item" }
+        Write-ColorLine -Color Green "-- [OK] Assignments needing no action ($($noActionNeeded.Count)) --"
+        foreach ($item in $noActionNeeded) { Write-ColorLine -Color Green "  * $item" }
     }
 
+    $script:AllMgResults.Add([pscustomobject]@{
+        ManagementGroupId = $mgId
+        Total             = $assignments.Count
+        NeedsAction       = $needsAction.Count
+        NoActionNeeded    = $noActionNeeded.Count
+        NeedsActionItems  = $needsAction
+    })
+
     Write-LogGroupEnd
+}
+
+# --- Overall run summary across every MG processed - one place to look even when the
+# group-by-group logs above are long, since the loop above only prints a per-MG recap. ---
+$grandTotal       = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
+$grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
+$grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
+
+Write-Host ""
+Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandNoAction needed none ====="
+foreach ($mgResult in $script:AllMgResults) {
+    $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } else { 'Green' }
+    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.NeedsAction) action, $($mgResult.NoActionNeeded) none"
+}
+
+# GitHub Actions Job Summary (the run page's "Summary" tab) - a short markdown table that's easy
+# to scan without scrolling the raw logs. No-ops automatically outside GitHub Actions.
+if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
+    $summaryLines = New-Object System.Collections.Generic.List[string]
+    $summaryLines.Add('## Policy remediation sweep summary')
+    $summaryLines.Add('')
+    $summaryLines.Add('| Management Group | Total | :warning: Needs action | :white_check_mark: No action needed |')
+    $summaryLines.Add('|---|---|---|---|')
+    foreach ($mgResult in $script:AllMgResults) {
+        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.NoActionNeeded) |")
+    }
+    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandNeedsAction** | **$grandNoAction** |")
+
+    if ($grandNeedsAction -gt 0) {
+        $summaryLines.Add('')
+        $summaryLines.Add('### Assignments that needed action')
+        foreach ($mgResult in $script:AllMgResults) {
+            foreach ($item in $mgResult.NeedsActionItems) {
+                $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $item")
+            }
+        }
+    }
+
+    $summaryLines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }
 
 # Fail the run explicitly if anything failed, even though each failure was caught individually
