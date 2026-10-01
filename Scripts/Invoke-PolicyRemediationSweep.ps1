@@ -56,6 +56,10 @@ $script:HadFailures = $false
 # started) - this is what answers "what did this run actually fix", surfaced as its own section
 # in both the console summary and the GitHub Job Summary instead of being buried in per-MG detail.
 $script:FixesThisRun = New-Object System.Collections.Generic.List[string]
+# Same idea but for -WhatIf runs - nothing is actually applied, so these must never be reported as
+# "fixed"; kept separate so the end-of-run summary can say "would fix" / "this was a dry run"
+# instead of the misleading "nothing needed fixing" when there actually were findings.
+$script:WouldFixThisRun = New-Object System.Collections.Generic.List[string]
 
 function Write-LogGroupStart {
     param([string]$Title)
@@ -249,6 +253,7 @@ function Ensure-RoleAssignments {
                 $msg = "WOULD FIX: assign '$roleName' at $($req.Scope) to managed identity '$miName' (WhatIf - no change made)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
+                $script:WouldFixThisRun.Add("$label -> $msg")
             } else {
                 try {
                     New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
@@ -289,6 +294,7 @@ function Invoke-Remediation {
                 $msg = "WOULD START a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s) (WhatIf - no change made)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
+                $script:WouldFixThisRun.Add("$label -> $msg")
             } else {
                 try {
                     Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
@@ -319,6 +325,7 @@ function Invoke-Remediation {
             $msg = "WOULD START a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s) (WhatIf - no change made)"
             $actions.Add($msg)
             Write-ColorLine -Color Yellow "$label -> $msg"
+            $script:WouldFixThisRun.Add("$label -> $msg")
         } else {
             try {
                 Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
@@ -426,11 +433,20 @@ $grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction
 $grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
 
 Write-Host ""
-if ($script:FixesThisRun.Count -gt 0) {
-    Write-ColorLine -Color Bold "===== Fixed this run ($($script:FixesThisRun.Count)) ====="
-    foreach ($fix in $script:FixesThisRun) { Write-ColorLine -Color Green "  * $fix" }
+if ($WhatIf) {
+    if ($script:WouldFixThisRun.Count -gt 0) {
+        Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): would fix $($script:WouldFixThisRun.Count) item(s) - no changes were made ====="
+        foreach ($f in $script:WouldFixThisRun) { Write-ColorLine -Color Yellow "  * $f" }
+    } else {
+        Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): nothing would need fixing this run ====="
+    }
 } else {
-    Write-ColorLine -Color Green "===== Nothing needed fixing this run ====="
+    if ($script:FixesThisRun.Count -gt 0) {
+        Write-ColorLine -Color Bold "===== Fixed this run ($($script:FixesThisRun.Count)) ====="
+        foreach ($fix in $script:FixesThisRun) { Write-ColorLine -Color Green "  * $fix" }
+    } else {
+        Write-ColorLine -Color Bold "===== Nothing needed fixing this run ====="
+    }
 }
 
 Write-Host ""
@@ -447,15 +463,29 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     $summaryLines.Add('## Policy remediation sweep summary')
     $summaryLines.Add('')
 
-    if ($script:FixesThisRun.Count -gt 0) {
-        $summaryLines.Add(":wrench: **Fixed this run ($($script:FixesThisRun.Count)):**")
-        foreach ($fix in $script:FixesThisRun) { $summaryLines.Add("- $fix") }
+    if ($WhatIf) {
+        if ($script:WouldFixThisRun.Count -gt 0) {
+            $summaryLines.Add("**Dry run (WhatIf) - would fix $($script:WouldFixThisRun.Count) item(s); no changes were made:**")
+            foreach ($f in $script:WouldFixThisRun) { $summaryLines.Add("- $f") }
+        } else {
+            $summaryLines.Add('**Dry run (WhatIf) - nothing would need fixing this run.**')
+        }
     } else {
-        $summaryLines.Add(':white_check_mark: Nothing needed fixing this run.')
+        if ($script:FixesThisRun.Count -gt 0) {
+            $summaryLines.Add("**Fixed this run ($($script:FixesThisRun.Count)):**")
+            foreach ($fix in $script:FixesThisRun) { $summaryLines.Add("- $fix") }
+        } else {
+            $summaryLines.Add('**Nothing needed fixing this run.**')
+        }
     }
     $summaryLines.Add('')
 
-    $summaryLines.Add('| Management Group | Total | :warning: Needs action | :white_check_mark: No action needed |')
+    # Table headers render bold automatically (GFM table-header semantics) - that's the only reliable
+    # way to visually set them apart in a Job Summary; GitHub's renderer strips HTML style attributes
+    # and its only native colour mechanism (Alerts, e.g. [!WARNING]) forces its own icon, which
+    # conflicts with removing icons, so it isn't used here.
+    $actionColumnHeader = if ($WhatIf) { 'Would be actioned' } else { 'Actioned' }
+    $summaryLines.Add("| Management Group | Total | $actionColumnHeader | No action needed |")
     $summaryLines.Add('|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
         $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.NoActionNeeded) |")
@@ -464,7 +494,7 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
-        $summaryLines.Add('### Assignments that needed action (detail)')
+        $summaryLines.Add($(if ($WhatIf) { '### Assignments that would be actioned (detail)' } else { '### Assignments actioned (detail)' }))
         foreach ($mgResult in $script:AllMgResults) {
             foreach ($entry in $mgResult.NeedsActionItems) {
                 $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $($entry.Label)")
