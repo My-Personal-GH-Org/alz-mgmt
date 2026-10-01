@@ -19,6 +19,11 @@ on:
         required: true
         default: '1.14.9'
         type: string
+      terraform_target:
+        description: 'Optional -target=... flags (space separated), e.g. -target=azurerm_resource_group.policysweep_identity -target=azurerm_user_assigned_identity.policysweep'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   plan_and_apply:
@@ -31,3 +36,4 @@ jobs:
       terraform_action: ${{ inputs.terraform_action }}
       root_module_folder_relative_path: '.'
       terraform_cli_version: ${{ inputs.terraform_cli_version }}
+      terraform_target: ${{ inputs.terraform_target }}
