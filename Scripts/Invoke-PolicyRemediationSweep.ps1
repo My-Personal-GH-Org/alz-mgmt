@@ -52,6 +52,10 @@ $script:InGitHubActions = $env:GITHUB_ACTIONS -eq 'true'
 # Tracks whether any operation failed, so the script can exit non-zero even though each
 # failure is caught individually to let the rest of the sweep continue.
 $script:HadFailures = $false
+# Flat, run-wide list of every concrete fix applied (role assignment created / remediation task
+# started) - this is what answers "what did this run actually fix", surfaced as its own section
+# in both the console summary and the GitHub Job Summary instead of being buried in per-MG detail.
+$script:FixesThisRun = New-Object System.Collections.Generic.List[string]
 
 function Write-LogGroupStart {
     param([string]$Title)
@@ -186,13 +190,20 @@ function Get-RequiredRoleAssignments {
 }
 
 function Ensure-RoleAssignments {
+    <#
+      Returns a single pscustomobject { FoundMissing, Actions } instead of a bare bool - Actions is
+      a flat list of one-line, already-tense-correct descriptions (FIXED/WOULD FIX/FAILED) so the
+      caller can attach exactly what happened to this assignment in the per-MG recap and Job Summary,
+      instead of a reader having to go hunt back through the scrolling per-role detail lines above.
+    #>
     param($Assignment)
 
     $principalId = $Assignment.IdentityPrincipalId
-    if (-not $principalId) { return $false }
+    if (-not $principalId) { return [pscustomobject]@{ FoundMissing = $false; Actions = @() } }
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
     $foundMissing = $false
+    $actions = New-Object System.Collections.Generic.List[string]
 
     foreach ($req in (Get-RequiredRoleAssignments -Assignment $Assignment)) {
         # Compare just the role definition GUID, not the full string - the policy definition's stored
@@ -206,49 +217,69 @@ function Ensure-RoleAssignments {
             $foundMissing = $true
             $roleName = Get-RoleDisplayName -RoleDefinitionId $req.RoleDefinitionId
             Write-Warn "$label is missing a role assignment its managed identity needs before remediation can work: role $roleName at scope $($req.Scope)"
+
             if ($WhatIf) {
-                Write-Notice "$label -> would assign $roleName (WhatIf - no change made)"
+                $msg = "WOULD FIX: assign $roleName at $($req.Scope) (WhatIf - no change made)"
+                $actions.Add($msg)
+                Write-ColorLine -Color Yellow "$label -> $msg"
             } else {
-                Write-Notice "$label -> assigning $roleName at $($req.Scope)..."
                 try {
                     New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
-                    Write-ColorLine -Color Green "$label -> assigned $roleName at $($req.Scope)"
+                    $msg = "FIXED: assigned $roleName at $($req.Scope)"
+                    $actions.Add($msg)
+                    Write-ColorLine -Color Green "$label -> $msg"
+                    $script:FixesThisRun.Add("$label -> $msg")
                 } catch {
-                    Write-Err "$label -> FAILED to assign $roleName at $($req.Scope) - $($_.Exception.Message)"
+                    $msg = "FAILED to assign $roleName at $($req.Scope) - $($_.Exception.Message)"
+                    $actions.Add($msg)
+                    Write-Err "$label -> $msg"
                     $script:HadFailures = $true
                 }
             }
         }
     }
 
-    $foundMissing
+    [pscustomobject]@{ FoundMissing = $foundMissing; Actions = $actions }
 }
 
 function Invoke-Remediation {
+    <#
+      Returns { Started, Actions } like Ensure-RoleAssignments. Deliberately labelled "STARTED a
+      remediation task", never "FIXED" - policy remediation is async (the task runs and re-evaluates
+      compliance after this script exits), so claiming it's fixed here would be inaccurate.
+    #>
     param($Assignment, [string]$ManagementGroupId)
 
     $isSet = $Assignment.PolicyDefinitionId -match '/policySetDefinitions/'
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+    $actions = New-Object System.Collections.Generic.List[string]
 
     if (-not $isSet) {
         $nonCompliant = Get-AzPolicyState -ManagementGroupName $ManagementGroupId `
             -Filter "PolicyAssignmentId eq '$($Assignment.Id)' and ComplianceState eq 'NonCompliant'"
         if ($nonCompliant) {
             if ($WhatIf) {
-                Write-Notice "$label has non-compliant resources at $ManagementGroupId -> would start a remediation task (WhatIf - no change made)"
+                $msg = "WOULD START a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s) (WhatIf - no change made)"
+                $actions.Add($msg)
+                Write-ColorLine -Color Yellow "$label -> $msg"
             } else {
-                Write-Notice "$label has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
                 try {
                     Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                         -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId -ErrorAction Stop | Out-Null
+                    $msg = "STARTED a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s)"
+                    $actions.Add($msg)
+                    Write-ColorLine -Color Yellow "$label -> $msg"
+                    $script:FixesThisRun.Add("$label -> $msg")
                 } catch {
-                    Write-Err "$label -> FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                    $msg = "FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                    $actions.Add($msg)
+                    Write-Err "$label -> $msg"
                     $script:HadFailures = $true
                 }
             }
-            return $true
+            return [pscustomobject]@{ Started = $true; Actions = $actions }
         }
-        return $false
+        return [pscustomobject]@{ Started = $false; Actions = $actions }
     }
 
     # Initiative: only remediate member policy references that actually have non-compliant resources
@@ -258,21 +289,28 @@ function Invoke-Remediation {
 
     foreach ($refGroup in $nonCompliantRefs) {
         if ($WhatIf) {
-            Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId -> would start a remediation task (WhatIf - no change made)"
+            $msg = "WOULD START a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s) (WhatIf - no change made)"
+            $actions.Add($msg)
+            Write-ColorLine -Color Yellow "$label -> $msg"
         } else {
-            Write-Notice "$label member policy '$($refGroup.Name)' has non-compliant resources at $ManagementGroupId - starting a remediation task to deploy/modify them into compliance"
             try {
                 Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                     -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId `
                     -PolicyDefinitionReferenceId $refGroup.Name -ErrorAction Stop | Out-Null
+                $msg = "STARTED a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s)"
+                $actions.Add($msg)
+                Write-ColorLine -Color Yellow "$label -> $msg"
+                $script:FixesThisRun.Add("$label -> $msg")
             } catch {
-                Write-Err "$label member policy '$($refGroup.Name)' -> FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                $msg = "FAILED to start remediation for member policy '$($refGroup.Name)' at $ManagementGroupId - $($_.Exception.Message)"
+                $actions.Add($msg)
+                Write-Err "$label -> $msg"
                 $script:HadFailures = $true
             }
         }
     }
 
-    $nonCompliantRefs.Count -gt 0
+    [pscustomobject]@{ Started = ($nonCompliantRefs.Count -gt 0); Actions = $actions }
 }
 
 # --- Main ---
@@ -302,22 +340,27 @@ foreach ($mgId in $allMgIds) {
     }
     Write-Notice "Found $($assignments.Count) policy assignment(s) with a managed identity at this scope"
 
-    $needsAction = New-Object System.Collections.Generic.List[string]
+    $needsAction = New-Object System.Collections.Generic.List[object]
     $noActionNeeded = New-Object System.Collections.Generic.List[string]
 
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
         $foundIssue = $false
+        $assignmentActions = New-Object System.Collections.Generic.List[string]
 
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.
         if ($mgId -eq $RootManagementGroupId) {
-            if (Ensure-RoleAssignments -Assignment $assignment) { $foundIssue = $true }
+            $roleResult = Ensure-RoleAssignments -Assignment $assignment
+            if ($roleResult.FoundMissing) { $foundIssue = $true }
+            foreach ($a in $roleResult.Actions) { $assignmentActions.Add($a) }
         }
 
-        if (Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId) { $foundIssue = $true }
+        $remediationResult = Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId
+        if ($remediationResult.Started) { $foundIssue = $true }
+        foreach ($a in $remediationResult.Actions) { $assignmentActions.Add($a) }
 
         if ($foundIssue) {
-            $needsAction.Add($label)
+            $needsAction.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
         } else {
             Write-ColorLine -Color Green "$label - all required role assignments present, no non-compliant resources found; nothing to do"
             $noActionNeeded.Add($label)
@@ -328,7 +371,10 @@ foreach ($mgId in $allMgIds) {
 
     if ($needsAction.Count -gt 0) {
         Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
-        foreach ($item in $needsAction) { Write-ColorLine -Color Yellow "  * $item" }
+        foreach ($entry in $needsAction) {
+            Write-ColorLine -Color Yellow "  * $($entry.Label)"
+            foreach ($a in $entry.Actions) { Write-ColorLine -Color Yellow "      -> $a" }
+        }
     }
     if ($noActionNeeded.Count -gt 0) {
         Write-ColorLine -Color Green "-- [OK] Assignments needing no action ($($noActionNeeded.Count)) --"
@@ -353,6 +399,14 @@ $grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction
 $grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
 
 Write-Host ""
+if ($script:FixesThisRun.Count -gt 0) {
+    Write-ColorLine -Color Bold "===== Fixed this run ($($script:FixesThisRun.Count)) ====="
+    foreach ($fix in $script:FixesThisRun) { Write-ColorLine -Color Green "  * $fix" }
+} else {
+    Write-ColorLine -Color Green "===== Nothing needed fixing this run ====="
+}
+
+Write-Host ""
 Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandNoAction needed none ====="
 foreach ($mgResult in $script:AllMgResults) {
     $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } else { 'Green' }
@@ -365,6 +419,15 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     $summaryLines = New-Object System.Collections.Generic.List[string]
     $summaryLines.Add('## Policy remediation sweep summary')
     $summaryLines.Add('')
+
+    if ($script:FixesThisRun.Count -gt 0) {
+        $summaryLines.Add(":wrench: **Fixed this run ($($script:FixesThisRun.Count)):**")
+        foreach ($fix in $script:FixesThisRun) { $summaryLines.Add("- $fix") }
+    } else {
+        $summaryLines.Add(':white_check_mark: Nothing needed fixing this run.')
+    }
+    $summaryLines.Add('')
+
     $summaryLines.Add('| Management Group | Total | :warning: Needs action | :white_check_mark: No action needed |')
     $summaryLines.Add('|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
@@ -374,10 +437,13 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
-        $summaryLines.Add('### Assignments that needed action')
+        $summaryLines.Add('### Assignments that needed action (detail)')
         foreach ($mgResult in $script:AllMgResults) {
-            foreach ($item in $mgResult.NeedsActionItems) {
-                $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $item")
+            foreach ($entry in $mgResult.NeedsActionItems) {
+                $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $($entry.Label)")
+                foreach ($a in $entry.Actions) {
+                    $summaryLines.Add("  - $a")
+                }
             }
         }
     }
