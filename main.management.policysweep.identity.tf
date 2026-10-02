@@ -19,7 +19,7 @@ resource "azurerm_federated_identity_credential" "policysweep" {
   parent_id           = azurerm_user_assigned_identity.policysweep.id
   audience            = ["api://AzureADTokenExchange"]
   issuer              = "https://token.actions.githubusercontent.com"
-  subject             = "repo:My-Personal-GH-Org@313274884/alz-mgmt@1324688550:environment:alz-mgmt-policy-sweep:job_workflow_ref:My-Personal-GH-Org/alz-mgmt/.github/workflows/10-policy-remediation-sweep.yaml@refs/heads/main"
+  subject             = "repo:My-Personal-GH-Org@313274884/alz-mgmt@1324688550:environment:alz-mgmt-policy-sweep:job_workflow_ref:My-Personal-GH-Org/alz-mgmt/.github/workflows/10-azure-policy-sweep.yaml@refs/heads/main"
 }
 
 resource "azurerm_role_assignment" "policysweep_policy_contributor" {

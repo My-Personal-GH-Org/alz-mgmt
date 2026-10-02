@@ -1,8 +1,8 @@
 name: "10 [SCHEDULED] Policy Compliance Remediation Sweep"
 
 on:
-  schedule:
-    - cron: "0 18 * * *"   # nightly - always runs with TargetScope=All
+  # schedule:
+  #   - cron: "0 18 * * *"   # nightly - always runs with TargetScope=All - DISABLED for now, see memory note
   workflow_dispatch:
     inputs:
       root_management_group_id:
@@ -32,6 +32,9 @@ jobs:
   remediate:
     runs-on: self-hosted   # match whatever your plan/apply jobs already use
     environment: alz-mgmt-policy-sweep   # separate, no-approval environment - see FIC note below
+    env:
+      # Must be set before azure/login imports the Az module (enable-AzPSSession: true below) to take effect.
+      SuppressAzurePowerShellBreakingChangeWarnings: 'true'
     steps:
       - uses: actions/checkout@v4
 
