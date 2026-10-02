@@ -3,6 +3,9 @@
   Discovers all DINE/Modify policy assignments under a management group hierarchy and
   triggers remediation, filling in missing role assignments first for the root MG only
   (child MGs are already confirmed to get correct role assignments via Terraform/alzlib).
+  Remediation is SKIPPED for any assignment in DoNotEnforce mode - a deliberate safety choice
+  for this unattended sweep, not an Azure limitation (role-assignment gap-fill still applies
+  regardless of enforcement mode, since that's inert RBAC prep, not a resource change).
 
 .PARAMETER RootManagementGroupId
   The top-level MG to sweep (e.g. "MG-AzLz-Acclrtr"). Children are discovered recursively -
@@ -279,11 +282,28 @@ function Invoke-Remediation {
       Returns { Started, Actions } like Ensure-RoleAssignments. Deliberately labelled "STARTED a
       remediation task", never "FIXED" - policy remediation is async (the task runs and re-evaluates
       compliance after this script exits), so claiming it's fixed here would be inaccurate.
+
+      SKIPS remediation entirely for DoNotEnforce assignments - a deliberate safety choice, NOT an Azure
+      limitation. Confirmed from Microsoft's own "Enforcement mode" docs: remediation tasks CAN be started
+      manually regardless of enforcement mode ("Remediate manually" = Yes for both Default and
+      DoNotEnforce) - enforcementMode only gates auto-enforcement on new/updated resources. Since this sweep
+      runs unattended, it deliberately does NOT touch assignments the team has intentionally left
+      non-enforcing (e.g. still being validated) - only Ensure-RoleAssignments' RBAC gap-fill still applies
+      to those, since that's inert prep work, not a resource change.
     #>
     param($Assignment, [string]$ManagementGroupId)
 
-    $isSet = $Assignment.PolicyDefinitionId -match '/policySetDefinitions/'
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+
+    # ASSUMED flattened like .Scope/.PolicyDefinitionId/.IdentityType elsewhere in this script (not yet
+    # independently verified) - if this property path turns out wrong, this check just never matches and
+    # remediation runs unconditionally as it did before this change (fails open, not closed).
+    if ($Assignment.EnforcementMode -eq 'DoNotEnforce') {
+        Write-Notice "$label -> SKIPPED remediation: assignment is in DoNotEnforce mode (role-assignment gap-fill, if any, still applies above)"
+        return [pscustomobject]@{ Started = $false; Actions = @() }
+    }
+
+    $isSet = $Assignment.PolicyDefinitionId -match '/policySetDefinitions/'
     $actions = New-Object System.Collections.Generic.List[string]
 
     if (-not $isSet) {
