@@ -244,6 +244,7 @@ function Ensure-RoleAssignments {
     if (-not $principalId) { return [pscustomobject]@{ FoundMissing = $false; Actions = @() } }
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+    if ($Assignment.EnforcementMode -eq 'DoNotEnforce') { $label += ' [EnforcementMode: DoNotEnforce]' }
     $miName = Get-PrincipalDisplayName -PrincipalId $principalId
     $foundMissing = $false
     $actions = New-Object System.Collections.Generic.List[string]
@@ -314,6 +315,7 @@ function Invoke-Remediation {
     param($Assignment, [string]$ManagementGroupId)
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
+    if ($Assignment.EnforcementMode -eq 'DoNotEnforce') { $label += ' [EnforcementMode: DoNotEnforce]' }
 
     # ASSUMED flattened like .Scope/.PolicyDefinitionId/.IdentityType elsewhere in this script (not yet
     # independently verified) - if this property path turns out wrong, $skipDueToEnforcement is just always
@@ -435,6 +437,11 @@ foreach ($mgId in $allMgIds) {
 
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
+        # Tag the label itself (not just the bucket) with enforcement mode, so it's visible even when
+        # this assignment lands in "Actioned" purely from an unconditional RBAC gap-fix (independent of
+        # enforcement mode) rather than from an actual remediation - otherwise a DoNotEnforce assignment
+        # showing up as "Actioned" with no DoNotEnforce marker anywhere looks like a reporting mistake.
+        if ($assignment.EnforcementMode -eq 'DoNotEnforce') { $label += ' [EnforcementMode: DoNotEnforce]' }
         $foundIssue = $false
         $wasSkipped = $false
         $assignmentActions = New-Object System.Collections.Generic.List[string]
