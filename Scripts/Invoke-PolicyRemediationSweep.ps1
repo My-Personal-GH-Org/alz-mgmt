@@ -3,9 +3,10 @@
   Discovers all DINE/Modify policy assignments under a management group hierarchy and
   triggers remediation, filling in missing role assignments first for the root MG only
   (child MGs are already confirmed to get correct role assignments via Terraform/alzlib).
-  Remediation is SKIPPED for any assignment in DoNotEnforce mode - a deliberate safety choice
-  for this unattended sweep, not an Azure limitation (role-assignment gap-fill still applies
-  regardless of enforcement mode, since that's inert RBAC prep, not a resource change).
+  Remediation is SKIPPED by default for any assignment in DoNotEnforce mode - a deliberate
+  safety default for this unattended sweep, not an Azure limitation - opt in with
+  -FixDoNotEnforcePolicies. Role-assignment gap-fill always applies regardless of enforcement
+  mode or this switch, since that's inert RBAC prep, not a resource change.
 
 .PARAMETER RootManagementGroupId
   The top-level MG to sweep (e.g. "MG-AzLz-Acclrtr"). Children are discovered recursively -
@@ -16,6 +17,12 @@
   'RootOnly' - process only $RootManagementGroupId itself, skip all children.
   'ChildrenOnly' - process only descendant MGs, skip the root itself (also skips the
   role-assignment gap-fill check, since that only ever applies to the root).
+
+.PARAMETER FixDoNotEnforcePolicies
+  Opt-in switch. By default, assignments in DoNotEnforce mode are left alone (remediation is
+  skipped for them, role-assignment gap-fill still happens). Pass this switch to also remediate
+  non-compliant resources under DoNotEnforce assignments - use once you're ready for those
+  policies' real-world effects, not as a standing default.
 
 .NOTES
   Requires Az.Accounts, Az.Resources, Az.PolicyInsights. Run authenticated as an identity
@@ -46,6 +53,8 @@ param(
 
     [ValidateSet('All', 'RootOnly', 'ChildrenOnly')]
     [string]$TargetScope = 'All',
+
+    [switch]$FixDoNotEnforcePolicies,
 
     [switch]$WhatIf
 )
@@ -283,13 +292,12 @@ function Invoke-Remediation {
       remediation task", never "FIXED" - policy remediation is async (the task runs and re-evaluates
       compliance after this script exits), so claiming it's fixed here would be inaccurate.
 
-      SKIPS remediation entirely for DoNotEnforce assignments - a deliberate safety choice, NOT an Azure
-      limitation. Confirmed from Microsoft's own "Enforcement mode" docs: remediation tasks CAN be started
-      manually regardless of enforcement mode ("Remediate manually" = Yes for both Default and
-      DoNotEnforce) - enforcementMode only gates auto-enforcement on new/updated resources. Since this sweep
-      runs unattended, it deliberately does NOT touch assignments the team has intentionally left
-      non-enforcing (e.g. still being validated) - only Ensure-RoleAssignments' RBAC gap-fill still applies
-      to those, since that's inert prep work, not a resource change.
+      SKIPS remediation by default for DoNotEnforce assignments - a deliberate safety default, NOT an
+      Azure limitation. Confirmed from Microsoft's own "Enforcement mode" docs: remediation tasks CAN be
+      started manually regardless of enforcement mode ("Remediate manually" = Yes for both Default and
+      DoNotEnforce) - enforcementMode only gates auto-enforcement on new/updated resources. Pass the
+      top-level -FixDoNotEnforcePolicies switch to opt into remediating these too. Ensure-RoleAssignments'
+      RBAC gap-fill always still applies regardless, since that's inert prep work, not a resource change.
     #>
     param($Assignment, [string]$ManagementGroupId)
 
@@ -297,9 +305,9 @@ function Invoke-Remediation {
 
     # ASSUMED flattened like .Scope/.PolicyDefinitionId/.IdentityType elsewhere in this script (not yet
     # independently verified) - if this property path turns out wrong, this check just never matches and
-    # remediation runs unconditionally as it did before this change (fails open, not closed).
-    if ($Assignment.EnforcementMode -eq 'DoNotEnforce') {
-        Write-Notice "$label -> SKIPPED remediation: assignment is in DoNotEnforce mode (role-assignment gap-fill, if any, still applies above)"
+    # remediation runs unconditionally regardless of -FixDoNotEnforcePolicies (fails open, not closed).
+    if ($Assignment.EnforcementMode -eq 'DoNotEnforce' -and -not $FixDoNotEnforcePolicies) {
+        Write-Notice "$label -> SKIPPED remediation: assignment is in DoNotEnforce mode (role-assignment gap-fill, if any, still applies above; pass -FixDoNotEnforcePolicies to include it)"
         return [pscustomobject]@{ Started = $false; Actions = @() }
     }
 
