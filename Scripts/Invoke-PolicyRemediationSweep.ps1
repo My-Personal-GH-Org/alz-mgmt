@@ -298,18 +298,17 @@ function Invoke-Remediation {
       DoNotEnforce) - enforcementMode only gates auto-enforcement on new/updated resources. Pass the
       top-level -FixDoNotEnforcePolicies switch to opt into remediating these too. Ensure-RoleAssignments'
       RBAC gap-fill always still applies regardless, since that's inert prep work, not a resource change.
+      The skip is only decided AFTER checking for non-compliant resources, so a skip is always reported
+      with the real count of resources being left unfixed - never a silent, uninformative "skipped".
     #>
     param($Assignment, [string]$ManagementGroupId)
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
 
     # ASSUMED flattened like .Scope/.PolicyDefinitionId/.IdentityType elsewhere in this script (not yet
-    # independently verified) - if this property path turns out wrong, this check just never matches and
-    # remediation runs unconditionally regardless of -FixDoNotEnforcePolicies (fails open, not closed).
-    if ($Assignment.EnforcementMode -eq 'DoNotEnforce' -and -not $FixDoNotEnforcePolicies) {
-        Write-Notice "$label -> SKIPPED remediation: assignment is in DoNotEnforce mode (role-assignment gap-fill, if any, still applies above; pass -FixDoNotEnforcePolicies to include it)"
-        return [pscustomobject]@{ Started = $false; Actions = @() }
-    }
+    # independently verified) - if this property path turns out wrong, $skipDueToEnforcement is just always
+    # $false and remediation runs unconditionally regardless of -FixDoNotEnforcePolicies (fails open).
+    $skipDueToEnforcement = $Assignment.EnforcementMode -eq 'DoNotEnforce' -and -not $FixDoNotEnforcePolicies
 
     $isSet = $Assignment.PolicyDefinitionId -match '/policySetDefinitions/'
     $actions = New-Object System.Collections.Generic.List[string]
@@ -318,6 +317,12 @@ function Invoke-Remediation {
         $nonCompliant = Get-AzPolicyState -ManagementGroupName $ManagementGroupId `
             -Filter "PolicyAssignmentId eq '$($Assignment.Id)' and ComplianceState eq 'NonCompliant'"
         if ($nonCompliant) {
+            if ($skipDueToEnforcement) {
+                $msg = "SKIPPED: $($nonCompliant.Count) non-compliant resource(s) left unremediated - assignment is in DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
+                $actions.Add($msg)
+                Write-ColorLine -Color Cyan "$label -> $msg"
+                return [pscustomobject]@{ Started = $true; Actions = $actions }
+            }
             if ($WhatIf) {
                 $msg = "WOULD START a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s) (WhatIf - no change made)"
                 $actions.Add($msg)
@@ -349,6 +354,12 @@ function Invoke-Remediation {
         Group-Object PolicyDefinitionReferenceId
 
     foreach ($refGroup in $nonCompliantRefs) {
+        if ($skipDueToEnforcement) {
+            $msg = "SKIPPED: member policy '$($refGroup.Name)' has $($refGroup.Count) non-compliant resource(s) left unremediated - DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
+            $actions.Add($msg)
+            Write-ColorLine -Color Cyan "$label -> $msg"
+            continue
+        }
         if ($WhatIf) {
             $msg = "WOULD START a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s) (WhatIf - no change made)"
             $actions.Add($msg)
