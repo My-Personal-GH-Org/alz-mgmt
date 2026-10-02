@@ -262,19 +262,19 @@ function Ensure-RoleAssignments {
             Write-Warn "$label is missing a role assignment its managed identity '$miName' needs before remediation can work: role '$roleName' at scope $($req.Scope)"
 
             if ($WhatIf) {
-                $msg = "WOULD FIX: assign '$roleName' at $($req.Scope) to managed identity '$miName' (WhatIf - no change made)"
+                $msg = "WOULD FIX: assign ROLE: '$roleName' at SCOPE: '$($req.Scope)' to MANAGED-IDENTITY: '$miName' (WhatIf - no change made)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
                 $script:WouldFixThisRun.Add("$label -> $msg")
             } else {
                 try {
                     New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
-                    $msg = "FIXED: assigned '$roleName' at $($req.Scope) to managed identity '$miName'"
+                    $msg = "FIXED: assigned ROLE: '$roleName' at SCOPE: '$($req.Scope)' to MANAGED-IDENTITY: '$miName'"
                     $actions.Add($msg)
                     Write-ColorLine -Color Green "$label -> $msg"
                     $script:FixesThisRun.Add("$label -> $msg")
                 } catch {
-                    $msg = "FAILED to assign '$roleName' at $($req.Scope) to managed identity '$miName' - $($_.Exception.Message)"
+                    $msg = "FAILED to assign ROLE: '$roleName' at SCOPE: '$($req.Scope)' to MANAGED-IDENTITY: '$miName' - $($_.Exception.Message)"
                     $actions.Add($msg)
                     Write-Err "$label -> $msg"
                     $script:HadFailures = $true
@@ -300,6 +300,11 @@ function Invoke-Remediation {
       RBAC gap-fill always still applies regardless, since that's inert prep work, not a resource change.
       The skip is only decided AFTER checking for non-compliant resources, so a skip is always reported
       with the real count of resources being left unfixed - never a silent, uninformative "skipped".
+
+      Returns Started and Skipped as SEPARATE flags (not conflated) - Started means a real fix was
+      applied or would be (WhatIf); Skipped means non-compliant resources exist but were deliberately
+      left alone due to DoNotEnforce. Callers use this to put an assignment in its own "skipped" recap
+      bucket, distinct from genuine "needs action", instead of counting it as if it were actioned.
     #>
     param($Assignment, [string]$ManagementGroupId)
 
@@ -318,13 +323,13 @@ function Invoke-Remediation {
             -Filter "PolicyAssignmentId eq '$($Assignment.Id)' and ComplianceState eq 'NonCompliant'"
         if ($nonCompliant) {
             if ($skipDueToEnforcement) {
-                $msg = "SKIPPED: $($nonCompliant.Count) non-compliant resource(s) left unremediated - assignment is in DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
+                $msg = "SKIPPED: NON-COMPLIANT-COUNT: $($nonCompliant.Count) resource(s) left unremediated at SCOPE: '$ManagementGroupId' - assignment is in DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Cyan "$label -> $msg"
-                return [pscustomobject]@{ Started = $true; Actions = $actions }
+                return [pscustomobject]@{ Started = $false; Skipped = $true; Actions = $actions }
             }
             if ($WhatIf) {
-                $msg = "WOULD START a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s) (WhatIf - no change made)"
+                $msg = "WOULD START: remediation task at SCOPE: '$ManagementGroupId' for NON-COMPLIANT-COUNT: $($nonCompliant.Count) resource(s) (WhatIf - no change made)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
                 $script:WouldFixThisRun.Add("$label -> $msg")
@@ -332,20 +337,20 @@ function Invoke-Remediation {
                 try {
                     Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                         -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId -ErrorAction Stop | Out-Null
-                    $msg = "STARTED a remediation task at $ManagementGroupId for $($nonCompliant.Count) non-compliant resource(s)"
+                    $msg = "STARTED: remediation task at SCOPE: '$ManagementGroupId' for NON-COMPLIANT-COUNT: $($nonCompliant.Count) resource(s)"
                     $actions.Add($msg)
                     Write-ColorLine -Color Yellow "$label -> $msg"
                     $script:FixesThisRun.Add("$label -> $msg")
                 } catch {
-                    $msg = "FAILED to start remediation at $ManagementGroupId - $($_.Exception.Message)"
+                    $msg = "FAILED to start remediation at SCOPE: '$ManagementGroupId' - $($_.Exception.Message)"
                     $actions.Add($msg)
                     Write-Err "$label -> $msg"
                     $script:HadFailures = $true
                 }
             }
-            return [pscustomobject]@{ Started = $true; Actions = $actions }
+            return [pscustomobject]@{ Started = $true; Skipped = $false; Actions = $actions }
         }
-        return [pscustomobject]@{ Started = $false; Actions = $actions }
+        return [pscustomobject]@{ Started = $false; Skipped = $false; Actions = $actions }
     }
 
     # Initiative: only remediate member policy references that actually have non-compliant resources
@@ -355,13 +360,13 @@ function Invoke-Remediation {
 
     foreach ($refGroup in $nonCompliantRefs) {
         if ($skipDueToEnforcement) {
-            $msg = "SKIPPED: member policy '$($refGroup.Name)' has $($refGroup.Count) non-compliant resource(s) left unremediated - DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
+            $msg = "SKIPPED: MEMBER-POLICY: '$($refGroup.Name)' has NON-COMPLIANT-COUNT: $($refGroup.Count) resource(s) left unremediated at SCOPE: '$ManagementGroupId' - DoNotEnforce mode (pass -FixDoNotEnforcePolicies to include it)"
             $actions.Add($msg)
             Write-ColorLine -Color Cyan "$label -> $msg"
             continue
         }
         if ($WhatIf) {
-            $msg = "WOULD START a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s) (WhatIf - no change made)"
+            $msg = "WOULD START: remediation task for MEMBER-POLICY: '$($refGroup.Name)' at SCOPE: '$ManagementGroupId' for NON-COMPLIANT-COUNT: $($refGroup.Count) resource(s) (WhatIf - no change made)"
             $actions.Add($msg)
             Write-ColorLine -Color Yellow "$label -> $msg"
             $script:WouldFixThisRun.Add("$label -> $msg")
@@ -370,12 +375,12 @@ function Invoke-Remediation {
                 Start-AzPolicyRemediation -Name "sweep-$($Assignment.Name)-$($refGroup.Name)-$(Get-Date -Format yyyyMMddHHmm)" `
                     -PolicyAssignmentId $Assignment.Id -ManagementGroupId $ManagementGroupId `
                     -PolicyDefinitionReferenceId $refGroup.Name -ErrorAction Stop | Out-Null
-                $msg = "STARTED a remediation task for member policy '$($refGroup.Name)' at $ManagementGroupId for $($refGroup.Count) non-compliant resource(s)"
+                $msg = "STARTED: remediation task for MEMBER-POLICY: '$($refGroup.Name)' at SCOPE: '$ManagementGroupId' for NON-COMPLIANT-COUNT: $($refGroup.Count) resource(s)"
                 $actions.Add($msg)
                 Write-ColorLine -Color Yellow "$label -> $msg"
                 $script:FixesThisRun.Add("$label -> $msg")
             } catch {
-                $msg = "FAILED to start remediation for member policy '$($refGroup.Name)' at $ManagementGroupId - $($_.Exception.Message)"
+                $msg = "FAILED to start remediation for MEMBER-POLICY: '$($refGroup.Name)' at SCOPE: '$ManagementGroupId' - $($_.Exception.Message)"
                 $actions.Add($msg)
                 Write-Err "$label -> $msg"
                 $script:HadFailures = $true
@@ -383,7 +388,13 @@ function Invoke-Remediation {
         }
     }
 
-    [pscustomobject]@{ Started = ($nonCompliantRefs.Count -gt 0); Actions = $actions }
+    # skipDueToEnforcement is assignment-wide (not per member-policy), so it's never a mix of
+    # started-and-skipped within one assignment here - either all refs above were skipped, or none were.
+    if ($skipDueToEnforcement) {
+        [pscustomobject]@{ Started = $false; Skipped = ($nonCompliantRefs.Count -gt 0); Actions = $actions }
+    } else {
+        [pscustomobject]@{ Started = ($nonCompliantRefs.Count -gt 0); Skipped = $false; Actions = $actions }
+    }
 }
 
 # --- Main ---
@@ -414,11 +425,13 @@ foreach ($mgId in $allMgIds) {
     Write-Notice "Found $($assignments.Count) policy assignment(s) with a managed identity at this scope"
 
     $needsAction = New-Object System.Collections.Generic.List[object]
+    $skippedDoNotEnforce = New-Object System.Collections.Generic.List[object]
     $noActionNeeded = New-Object System.Collections.Generic.List[string]
 
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
         $foundIssue = $false
+        $wasSkipped = $false
         $assignmentActions = New-Object System.Collections.Generic.List[string]
 
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.
@@ -430,17 +443,23 @@ foreach ($mgId in $allMgIds) {
 
         $remediationResult = Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId
         if ($remediationResult.Started) { $foundIssue = $true }
+        if ($remediationResult.Skipped) { $wasSkipped = $true }
         foreach ($a in $remediationResult.Actions) { $assignmentActions.Add($a) }
 
+        # A genuine action (role-fix and/or real remediation) always wins the bucketing, even if this
+        # same assignment ALSO had a skipped member policy - "needs action" is reserved for things a real
+        # run actually does; "skipped" is its own bucket for things deliberately left alone, never both.
         if ($foundIssue) {
             $needsAction.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
+        } elseif ($wasSkipped) {
+            $skippedDoNotEnforce.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
         } else {
             Write-ColorLine -Color Green "$label - all required role assignments present, no non-compliant resources found; nothing to do"
             $noActionNeeded.Add($label)
         }
     }
 
-    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($noActionNeeded.Count) need no action"
+    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($skippedDoNotEnforce.Count) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
 
     if ($needsAction.Count -gt 0) {
         Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
@@ -449,17 +468,26 @@ foreach ($mgId in $allMgIds) {
             foreach ($a in $entry.Actions) { Write-ColorLine -Color Yellow "      -> $a" }
         }
     }
+    if ($skippedDoNotEnforce.Count -gt 0) {
+        Write-ColorLine -Color Cyan "-- [SKIPPED] Assignments left alone - DoNotEnforce ($($skippedDoNotEnforce.Count)) --"
+        foreach ($entry in $skippedDoNotEnforce) {
+            Write-ColorLine -Color Cyan "  * $($entry.Label)"
+            foreach ($a in $entry.Actions) { Write-ColorLine -Color Cyan "      -> $a" }
+        }
+    }
     if ($noActionNeeded.Count -gt 0) {
         Write-ColorLine -Color Green "-- [OK] Assignments needing no action ($($noActionNeeded.Count)) --"
         foreach ($item in $noActionNeeded) { Write-ColorLine -Color Green "  * $item" }
     }
 
     $script:AllMgResults.Add([pscustomobject]@{
-        ManagementGroupId = $mgId
-        Total             = $assignments.Count
-        NeedsAction       = $needsAction.Count
-        NoActionNeeded    = $noActionNeeded.Count
-        NeedsActionItems  = $needsAction
+        ManagementGroupId    = $mgId
+        Total                = $assignments.Count
+        NeedsAction          = $needsAction.Count
+        SkippedDoNotEnforce  = $skippedDoNotEnforce.Count
+        NoActionNeeded       = $noActionNeeded.Count
+        NeedsActionItems     = $needsAction
+        SkippedItems         = $skippedDoNotEnforce
     })
 
     Write-LogGroupEnd
@@ -469,6 +497,7 @@ foreach ($mgId in $allMgIds) {
 # group-by-group logs above are long, since the loop above only prints a per-MG recap. ---
 $grandTotal       = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
 $grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
+$grandSkipped     = ($script:AllMgResults | Measure-Object -Property SkippedDoNotEnforce -Sum).Sum
 $grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
 
 Write-Host ""
@@ -489,10 +518,10 @@ if ($WhatIf) {
 }
 
 Write-Host ""
-Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandNoAction needed none ====="
+Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandSkipped skipped (DoNotEnforce), $grandNoAction needed none ====="
 foreach ($mgResult in $script:AllMgResults) {
-    $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } else { 'Green' }
-    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.NeedsAction) action, $($mgResult.NoActionNeeded) none"
+    $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } elseif ($mgResult.SkippedDoNotEnforce -gt 0) { 'Cyan' } else { 'Green' }
+    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.NeedsAction) action, $($mgResult.SkippedDoNotEnforce) skipped, $($mgResult.NoActionNeeded) none"
 }
 
 # GitHub Actions Job Summary (the run page's "Summary" tab) - a short markdown table that's easy
@@ -526,18 +555,32 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     # and its only native colour mechanism (Alerts, e.g. [!WARNING]) forces its own icon, which
     # conflicts with removing icons, so it isn't used here.
     $actionColumnHeader = if ($WhatIf) { 'Would be actioned' } else { 'Actioned' }
-    $summaryLines.Add("| Management Group | Total | $actionColumnHeader | No action needed |")
-    $summaryLines.Add('|---|---|---|---|')
+    $summaryLines.Add("| Management Group | Total | $actionColumnHeader | Skipped (DoNotEnforce) | No action needed |")
+    $summaryLines.Add('|---|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
-        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.NoActionNeeded) |")
+        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.SkippedDoNotEnforce) | $($mgResult.NoActionNeeded) |")
     }
-    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandNeedsAction** | **$grandNoAction** |")
+    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandNeedsAction** | **$grandSkipped** | **$grandNoAction** |")
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
         $summaryLines.Add($(if ($WhatIf) { '### Assignments that would be actioned (detail)' } else { '### Assignments actioned (detail)' }))
         foreach ($mgResult in $script:AllMgResults) {
             foreach ($entry in $mgResult.NeedsActionItems) {
+                $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $($entry.Label)")
+                foreach ($a in $entry.Actions) {
+                    $summaryLines.Add("  - $a")
+                }
+            }
+        }
+    }
+
+    if ($grandSkipped -gt 0) {
+        $summaryLines.Add('')
+        $summaryLines.Add('### Assignments skipped - DoNotEnforce (detail)')
+        $summaryLines.Add('*(non-compliant resources exist but were deliberately left alone because the assignment is in DoNotEnforce mode; pass `-FixDoNotEnforcePolicies` / the workflow'+"'"+'s `fix_do_not_enforce_policies` input to include them)*')
+        foreach ($mgResult in $script:AllMgResults) {
+            foreach ($entry in $mgResult.SkippedItems) {
                 $summaryLines.Add("- **$($mgResult.ManagementGroupId)**: $($entry.Label)")
                 foreach ($a in $entry.Actions) {
                     $summaryLines.Add("  - $a")
