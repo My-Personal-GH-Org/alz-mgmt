@@ -1,8 +1,8 @@
 name: "10 [SCHEDULED] Policy Compliance Remediation Sweep"
 
 on:
-  schedule:
-    - cron: "0 18 * * *"   # nightly - always runs with TargetScope=All
+  # schedule:
+  #   - cron: "0 18 * * *"   # nightly - always runs with TargetScope=All - DISABLED for now, see memory note
   workflow_dispatch:
     inputs:
       root_management_group_id:
@@ -23,6 +23,11 @@ on:
         required: true
         type: boolean
         default: true
+      fix_do_not_enforce_policies:
+        description: "Also remediate assignments in DoNotEnforce mode (default: skip them)"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -32,6 +37,9 @@ jobs:
   remediate:
     runs-on: self-hosted   # match whatever your plan/apply jobs already use
     environment: alz-mgmt-policy-sweep   # separate, no-approval environment - see FIC note below
+    env:
+      # Must be set before azure/login imports the Az module (enable-AzPSSession: true below) to take effect.
+      SuppressAzurePowerShellBreakingChangeWarnings: 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -53,5 +61,8 @@ jobs:
           }
           if ('${{ github.event.inputs.dry_run || 'true' }}' -eq 'true') {
             $params.WhatIf = $true
+          }
+          if ('${{ github.event.inputs.fix_do_not_enforce_policies || 'false' }}' -eq 'true') {
+            $params.FixDoNotEnforcePolicies = $true
           }
           ./Scripts/Invoke-PolicyRemediationSweep.ps1 @params
