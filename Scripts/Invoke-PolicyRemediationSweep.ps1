@@ -268,7 +268,12 @@ function Ensure-RoleAssignments {
                 $script:WouldFixThisRun.Add("$label -> $msg")
             } else {
                 try {
-                    New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ErrorAction Stop | Out-Null
+                    # -ObjectType ServicePrincipal is required, not cosmetic - the sweep identity's own
+                    # User Access Administrator grant has an ABAC condition that only allows roleAssignments/write
+                    # when the request's PrincipalType is 'ServicePrincipal' (managed identities register as
+                    # service principals); omitting -ObjectType leaves that attribute unset on the request and
+                    # the condition denies it, surfacing as a generic AuthorizationFailed.
+                    New-AzRoleAssignment -ObjectId $principalId -RoleDefinitionId $reqGuid -Scope $req.Scope -ObjectType ServicePrincipal -ErrorAction Stop | Out-Null
                     $msg = "FIXED: assigned ROLE: '$roleName' at SCOPE: '$($req.Scope)' to MANAGED-IDENTITY: '$miName'"
                     $actions.Add($msg)
                     Write-ColorLine -Color Green "$label -> $msg"
