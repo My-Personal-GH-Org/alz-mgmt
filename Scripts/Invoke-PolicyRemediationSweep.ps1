@@ -586,10 +586,10 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     # conflicts with removing icons, so it isn't used here.
     # Roles Fixed and Remediation Started/Skipped are separate, independent columns (not one blended
     # "Actioned" number) - DoNotEnforce only ever gates remediation, never role-assignment gap-fill, so
-    # it's called out solely on the remediation column where it actually applies.
-    $rolesHeader = if ($WhatIf) { 'Roles Would Be Fixed' } else { 'Roles Fixed' }
-    $remediationHeader = if ($WhatIf) { 'Remediation Would Start' } else { 'Remediation Started' }
-    $summaryLines.Add("| Management Group | Total | $rolesHeader | $remediationHeader | Remediation Skipped (DoNotEnforce) | No action needed |")
+    # it's called out solely on the remediation column where it actually applies. Headers are the same
+    # for dry runs and full runs - WOULD FIX/WOULD START vs FIXED/STARTED is already spelled out in the
+    # per-assignment action text itself, so the header doesn't need to switch too.
+    $summaryLines.Add('| Management Group (Scope) | Total Assignments | Roles Fixed | Remediation Started | Remediation Skipped (DoNotEnforce) | No Action Needed |')
     $summaryLines.Add('|---|---|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
         $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.RolesFixed) | $($mgResult.RemediationStarted) | $($mgResult.RemediationSkipped) | $($mgResult.NoActionNeeded) |")
