@@ -434,6 +434,13 @@ foreach ($mgId in $allMgIds) {
     $needsAction = New-Object System.Collections.Generic.List[object]
     $skippedDoNotEnforce = New-Object System.Collections.Generic.List[object]
     $noActionNeeded = New-Object System.Collections.Generic.List[string]
+    # Independent counters (NOT mutually exclusive like the buckets above) - an assignment can both get a
+    # role fixed AND have its remediation skipped, which the single needsAction/skipped/noAction bucketing
+    # can't represent at once. These feed the summary table's separate Roles Fixed / Remediation Started /
+    # Remediation Skipped columns, so that combination is never hidden inside one blended "Actioned" number.
+    $rolesFixedCount = 0
+    $remediationStartedCount = 0
+    $remediationSkippedCount = 0
 
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
@@ -449,18 +456,20 @@ foreach ($mgId in $allMgIds) {
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.
         if ($mgId -eq $RootManagementGroupId) {
             $roleResult = Ensure-RoleAssignments -Assignment $assignment
-            if ($roleResult.FoundMissing) { $foundIssue = $true }
+            if ($roleResult.FoundMissing) { $foundIssue = $true; $rolesFixedCount++ }
             foreach ($a in $roleResult.Actions) { $assignmentActions.Add($a) }
         }
 
         $remediationResult = Invoke-Remediation -Assignment $assignment -ManagementGroupId $mgId
-        if ($remediationResult.Started) { $foundIssue = $true }
-        if ($remediationResult.Skipped) { $wasSkipped = $true }
+        if ($remediationResult.Started) { $foundIssue = $true; $remediationStartedCount++ }
+        if ($remediationResult.Skipped) { $wasSkipped = $true; $remediationSkippedCount++ }
         foreach ($a in $remediationResult.Actions) { $assignmentActions.Add($a) }
 
         # A genuine action (role-fix and/or real remediation) always wins the bucketing, even if this
         # same assignment ALSO had a skipped member policy - "needs action" is reserved for things a real
         # run actually does; "skipped" is its own bucket for things deliberately left alone, never both.
+        # (This bucketing still only drives the console [ACTION]/[SKIPPED]/[OK] groups below - the
+        # independent counters above are what the summary table uses instead.)
         if ($foundIssue) {
             $needsAction.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
         } elseif ($wasSkipped) {
@@ -471,7 +480,7 @@ foreach ($mgId in $allMgIds) {
         }
     }
 
-    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($skippedDoNotEnforce.Count) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
+    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $rolesFixedCount role(s) fixed, $remediationStartedCount remediation(s) started, $remediationSkippedCount remediation(s) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
 
     if ($needsAction.Count -gt 0) {
         Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
@@ -493,13 +502,15 @@ foreach ($mgId in $allMgIds) {
     }
 
     $script:AllMgResults.Add([pscustomobject]@{
-        ManagementGroupId    = $mgId
-        Total                = $assignments.Count
-        NeedsAction          = $needsAction.Count
-        SkippedDoNotEnforce  = $skippedDoNotEnforce.Count
-        NoActionNeeded       = $noActionNeeded.Count
-        NeedsActionItems     = $needsAction
-        SkippedItems         = $skippedDoNotEnforce
+        ManagementGroupId  = $mgId
+        Total              = $assignments.Count
+        NeedsAction        = $needsAction.Count
+        RolesFixed         = $rolesFixedCount
+        RemediationStarted = $remediationStartedCount
+        RemediationSkipped = $remediationSkippedCount
+        NoActionNeeded     = $noActionNeeded.Count
+        NeedsActionItems   = $needsAction
+        SkippedItems       = $skippedDoNotEnforce
     })
 
     Write-LogGroupEnd
@@ -507,10 +518,17 @@ foreach ($mgId in $allMgIds) {
 
 # --- Overall run summary across every MG processed - one place to look even when the
 # group-by-group logs above are long, since the loop above only prints a per-MG recap. ---
-$grandTotal       = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
-$grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
-$grandSkipped     = ($script:AllMgResults | Measure-Object -Property SkippedDoNotEnforce -Sum).Sum
-$grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
+$grandTotal              = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
+$grandNeedsAction        = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
+$grandRolesFixed         = ($script:AllMgResults | Measure-Object -Property RolesFixed -Sum).Sum
+$grandRemediationStarted = ($script:AllMgResults | Measure-Object -Property RemediationStarted -Sum).Sum
+$grandRemediationSkipped = ($script:AllMgResults | Measure-Object -Property RemediationSkipped -Sum).Sum
+$grandNoAction           = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
+# Separate from $grandRemediationSkipped above - this counts only the SkippedItems detail entries (the
+# unchanged console-recap bucket), which under-counts vs. the real independent skip count whenever an
+# assignment ALSO got a role fixed (that assignment's bucket priority puts it under NeedsAction instead).
+# Used only to gate/render the "skipped (detail)" bullet list below, not the table or banners.
+$grandSkippedItemsCount  = ($script:AllMgResults | ForEach-Object { $_.SkippedItems.Count } | Measure-Object -Sum).Sum
 
 Write-Host ""
 if ($WhatIf) {
@@ -530,10 +548,10 @@ if ($WhatIf) {
 }
 
 Write-Host ""
-Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandSkipped skipped (DoNotEnforce), $grandNoAction needed none ====="
+Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandRolesFixed role(s) fixed, $grandRemediationStarted remediation(s) started, $grandRemediationSkipped remediation(s) skipped (DoNotEnforce), $grandNoAction needed none ====="
 foreach ($mgResult in $script:AllMgResults) {
-    $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } elseif ($mgResult.SkippedDoNotEnforce -gt 0) { 'Cyan' } else { 'Green' }
-    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.NeedsAction) action, $($mgResult.SkippedDoNotEnforce) skipped, $($mgResult.NoActionNeeded) none"
+    $flag = if ($mgResult.RolesFixed -gt 0 -or $mgResult.RemediationStarted -gt 0) { 'Yellow' } elseif ($mgResult.RemediationSkipped -gt 0) { 'Cyan' } else { 'Green' }
+    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.RolesFixed) roles fixed, $($mgResult.RemediationStarted) remediation started, $($mgResult.RemediationSkipped) skipped, $($mgResult.NoActionNeeded) none"
 }
 
 # GitHub Actions Job Summary (the run page's "Summary" tab) - a short markdown table that's easy
@@ -566,13 +584,17 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     # way to visually set them apart in a Job Summary; GitHub's renderer strips HTML style attributes
     # and its only native colour mechanism (Alerts, e.g. [!WARNING]) forces its own icon, which
     # conflicts with removing icons, so it isn't used here.
-    $actionColumnHeader = if ($WhatIf) { 'Would be actioned' } else { 'Actioned' }
-    $summaryLines.Add("| Management Group | Total | $actionColumnHeader | Skipped (DoNotEnforce) | No action needed |")
-    $summaryLines.Add('|---|---|---|---|---|')
+    # Roles Fixed and Remediation Started/Skipped are separate, independent columns (not one blended
+    # "Actioned" number) - DoNotEnforce only ever gates remediation, never role-assignment gap-fill, so
+    # it's called out solely on the remediation column where it actually applies. Headers are the same
+    # for dry runs and full runs - WOULD FIX/WOULD START vs FIXED/STARTED is already spelled out in the
+    # per-assignment action text itself, so the header doesn't need to switch too.
+    $summaryLines.Add('| Management Group (Scope) | Total Assignments | Roles Fixed | Remediation Started | Remediation Skipped (DoNotEnforce) | No Action Needed |')
+    $summaryLines.Add('|---|---|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
-        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.SkippedDoNotEnforce) | $($mgResult.NoActionNeeded) |")
+        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.RolesFixed) | $($mgResult.RemediationStarted) | $($mgResult.RemediationSkipped) | $($mgResult.NoActionNeeded) |")
     }
-    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandNeedsAction** | **$grandSkipped** | **$grandNoAction** |")
+    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandRolesFixed** | **$grandRemediationStarted** | **$grandRemediationSkipped** | **$grandNoAction** |")
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
@@ -587,7 +609,7 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
         }
     }
 
-    if ($grandSkipped -gt 0) {
+    if ($grandSkippedItemsCount -gt 0) {
         $summaryLines.Add('')
         $summaryLines.Add('### Assignments skipped - DoNotEnforce (detail)')
         $summaryLines.Add('*(non-compliant resources exist but were deliberately left alone because the assignment is in DoNotEnforce mode; pass `-FixDoNotEnforcePolicies` / the workflow'+"'"+'s `fix_do_not_enforce_policies` input to include them)*')
