@@ -434,6 +434,7 @@ foreach ($mgId in $allMgIds) {
     $needsAction = New-Object System.Collections.Generic.List[object]
     $skippedDoNotEnforce = New-Object System.Collections.Generic.List[object]
     $noActionNeeded = New-Object System.Collections.Generic.List[string]
+    $needsActionDoNotEnforce = 0
 
     foreach ($assignment in $assignments) {
         $label = "Policy Assignment '$($assignment.DisplayName)' ['$($assignment.Name)']"
@@ -463,6 +464,10 @@ foreach ($mgId in $allMgIds) {
         # run actually does; "skipped" is its own bucket for things deliberately left alone, never both.
         if ($foundIssue) {
             $needsAction.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
+            # Separate sub-count (not a separate bucket) so the table can show how many of the "Actioned"
+            # assignments were DoNotEnforce - these were actioned via the unconditional RBAC gap-fix only,
+            # not via real remediation, which the Actioned count alone doesn't distinguish.
+            if ($assignment.EnforcementMode -eq 'DoNotEnforce') { $needsActionDoNotEnforce++ }
         } elseif ($wasSkipped) {
             $skippedDoNotEnforce.Add([pscustomobject]@{ Label = $label; Actions = $assignmentActions })
         } else {
@@ -471,7 +476,8 @@ foreach ($mgId in $allMgIds) {
         }
     }
 
-    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action, $($skippedDoNotEnforce.Count) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
+    $actionedSuffix = if ($needsActionDoNotEnforce -gt 0) { " (incl. $needsActionDoNotEnforce DoNotEnforce - RBAC gap-fix only)" } else { '' }
+    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $($needsAction.Count) need action$actionedSuffix, $($skippedDoNotEnforce.Count) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
 
     if ($needsAction.Count -gt 0) {
         Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
@@ -493,24 +499,34 @@ foreach ($mgId in $allMgIds) {
     }
 
     $script:AllMgResults.Add([pscustomobject]@{
-        ManagementGroupId    = $mgId
-        Total                = $assignments.Count
-        NeedsAction          = $needsAction.Count
-        SkippedDoNotEnforce  = $skippedDoNotEnforce.Count
-        NoActionNeeded       = $noActionNeeded.Count
-        NeedsActionItems     = $needsAction
-        SkippedItems         = $skippedDoNotEnforce
+        ManagementGroupId       = $mgId
+        Total                   = $assignments.Count
+        NeedsAction             = $needsAction.Count
+        NeedsActionDoNotEnforce = $needsActionDoNotEnforce
+        SkippedDoNotEnforce     = $skippedDoNotEnforce.Count
+        NoActionNeeded          = $noActionNeeded.Count
+        NeedsActionItems        = $needsAction
+        SkippedItems            = $skippedDoNotEnforce
     })
 
     Write-LogGroupEnd
 }
 
+# Renders an "Actioned" count with its DoNotEnforce sub-count called out, e.g. "3 (1 DoNotEnforce)" -
+# used both in the console and the Job Summary table so an RBAC-only fix on a DoNotEnforce assignment
+# is never silently indistinguishable from a real remediation within the same "Actioned" number.
+function Format-ActionedCount {
+    param([int]$Actioned, [int]$ActionedDoNotEnforce)
+    if ($ActionedDoNotEnforce -gt 0) { "$Actioned ($ActionedDoNotEnforce DoNotEnforce)" } else { "$Actioned" }
+}
+
 # --- Overall run summary across every MG processed - one place to look even when the
 # group-by-group logs above are long, since the loop above only prints a per-MG recap. ---
-$grandTotal       = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
-$grandNeedsAction = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
-$grandSkipped     = ($script:AllMgResults | Measure-Object -Property SkippedDoNotEnforce -Sum).Sum
-$grandNoAction    = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
+$grandTotal                   = ($script:AllMgResults | Measure-Object -Property Total -Sum).Sum
+$grandNeedsAction             = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
+$grandNeedsActionDoNotEnforce = ($script:AllMgResults | Measure-Object -Property NeedsActionDoNotEnforce -Sum).Sum
+$grandSkipped                 = ($script:AllMgResults | Measure-Object -Property SkippedDoNotEnforce -Sum).Sum
+$grandNoAction                = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
 
 Write-Host ""
 if ($WhatIf) {
@@ -530,10 +546,10 @@ if ($WhatIf) {
 }
 
 Write-Host ""
-Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $grandNeedsAction needed action, $grandSkipped skipped (DoNotEnforce), $grandNoAction needed none ====="
+Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $(Format-ActionedCount $grandNeedsAction $grandNeedsActionDoNotEnforce) needed action, $grandSkipped skipped (DoNotEnforce), $grandNoAction needed none ====="
 foreach ($mgResult in $script:AllMgResults) {
     $flag = if ($mgResult.NeedsAction -gt 0) { 'Yellow' } elseif ($mgResult.SkippedDoNotEnforce -gt 0) { 'Cyan' } else { 'Green' }
-    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $($mgResult.NeedsAction) action, $($mgResult.SkippedDoNotEnforce) skipped, $($mgResult.NoActionNeeded) none"
+    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $(Format-ActionedCount $mgResult.NeedsAction $mgResult.NeedsActionDoNotEnforce) action, $($mgResult.SkippedDoNotEnforce) skipped, $($mgResult.NoActionNeeded) none"
 }
 
 # GitHub Actions Job Summary (the run page's "Summary" tab) - a short markdown table that's easy
@@ -570,9 +586,9 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     $summaryLines.Add("| Management Group | Total | $actionColumnHeader | Skipped (DoNotEnforce) | No action needed |")
     $summaryLines.Add('|---|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
-        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $($mgResult.NeedsAction) | $($mgResult.SkippedDoNotEnforce) | $($mgResult.NoActionNeeded) |")
+        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $(Format-ActionedCount $mgResult.NeedsAction $mgResult.NeedsActionDoNotEnforce) | $($mgResult.SkippedDoNotEnforce) | $($mgResult.NoActionNeeded) |")
     }
-    $summaryLines.Add("| **Total** | **$grandTotal** | **$grandNeedsAction** | **$grandSkipped** | **$grandNoAction** |")
+    $summaryLines.Add("| **Total** | **$grandTotal** | **$(Format-ActionedCount $grandNeedsAction $grandNeedsActionDoNotEnforce)** | **$grandSkipped** | **$grandNoAction** |")
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
