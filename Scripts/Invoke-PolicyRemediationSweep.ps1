@@ -233,20 +233,23 @@ function Get-RequiredRoleAssignments {
 
 function Ensure-RoleAssignments {
     <#
-      Returns a single pscustomobject { FoundMissing, Actions } instead of a bare bool - Actions is
-      a flat list of one-line, already-tense-correct descriptions (FIXED/WOULD FIX/FAILED) so the
-      caller can attach exactly what happened to this assignment in the per-MG recap and Job Summary,
-      instead of a reader having to go hunt back through the scrolling per-role detail lines above.
+      Returns { FoundMissing, AnyFixed, AnyFailed, Actions } - FoundMissing still drives needs-action
+      vs no-action bucketing (true on any gap, fixed or failed), but AnyFixed/AnyFailed are tracked
+      SEPARATELY so the caller's Roles Fixed / Roles Failed counters never conflate the two - a prior
+      bug here made an assignment where every required role FAILED to assign still count as "fixed",
+      since the single FoundMissing flag fed both the bucketing and the Roles Fixed counter.
     #>
     param($Assignment)
 
     $principalId = $Assignment.IdentityPrincipalId
-    if (-not $principalId) { return [pscustomobject]@{ FoundMissing = $false; Actions = @() } }
+    if (-not $principalId) { return [pscustomobject]@{ FoundMissing = $false; AnyFixed = $false; AnyFailed = $false; Actions = @() } }
 
     $label = "Policy Assignment '$($Assignment.DisplayName)' ['$($Assignment.Name)']"
     if ($Assignment.EnforcementMode -eq 'DoNotEnforce') { $label += ' [EnforcementMode: DoNotEnforce]' }
     $miName = Get-PrincipalDisplayName -PrincipalId $principalId
     $foundMissing = $false
+    $anyFixed = $false
+    $anyFailed = $false
     $actions = New-Object System.Collections.Generic.List[string]
 
     foreach ($req in (Get-RequiredRoleAssignments -Assignment $Assignment)) {
@@ -279,17 +282,19 @@ function Ensure-RoleAssignments {
                     $actions.Add($msg)
                     Write-ColorLine -Color Green "$label -> $msg"
                     $script:FixesThisRun.Add("$label -> $msg")
+                    $anyFixed = $true
                 } catch {
                     $msg = "FAILED to assign ROLE: '$roleName' at SCOPE: '$($req.Scope)' to MANAGED-IDENTITY: '$miName' - $($_.Exception.Message)"
                     $actions.Add($msg)
                     Write-Err "$label -> $msg"
                     $script:HadFailures = $true
+                    $anyFailed = $true
                 }
             }
         }
     }
 
-    [pscustomobject]@{ FoundMissing = $foundMissing; Actions = $actions }
+    [pscustomobject]@{ FoundMissing = $foundMissing; AnyFixed = $anyFixed; AnyFailed = $anyFailed; Actions = $actions }
 }
 
 function Invoke-Remediation {
@@ -440,6 +445,7 @@ foreach ($mgId in $allMgIds) {
     # Remediation Skipped columns, so that combination is never hidden inside one blended "Actioned" number.
     $rolesFixedCount = 0
     $rolesFixedDoNotEnforceCount = 0
+    $rolesFailedCount = 0
     $remediationStartedCount = 0
     $remediationSkippedCount = 0
 
@@ -457,14 +463,18 @@ foreach ($mgId in $allMgIds) {
         # Only the root MG has the confirmed role-assignment gap - children already work via Terraform/alzlib.
         if ($mgId -eq $RootManagementGroupId) {
             $roleResult = Ensure-RoleAssignments -Assignment $assignment
-            if ($roleResult.FoundMissing) {
-                $foundIssue = $true
+            if ($roleResult.FoundMissing) { $foundIssue = $true }
+            if ($roleResult.AnyFixed) {
                 $rolesFixedCount++
                 # Informational only - RBAC gap-fill is unconditional regardless of enforcement mode, this
                 # doesn't mean DoNotEnforce affects whether a role gets fixed, just flags the overlap so the
                 # table can show how many of the roles-fixed assignments happen to also be DoNotEnforce.
                 if ($assignment.EnforcementMode -eq 'DoNotEnforce') { $rolesFixedDoNotEnforceCount++ }
             }
+            # Tracked separately from RolesFixed - an assignment can have SOME roles fixed and OTHERS fail
+            # (e.g. a privileged role blocked by the sweep UMI's own ABAC condition), so a real failure must
+            # never be folded into the fixed count or silently read as "all good" in the summary table.
+            if ($roleResult.AnyFailed) { $rolesFailedCount++ }
             foreach ($a in $roleResult.Actions) { $assignmentActions.Add($a) }
         }
 
@@ -488,7 +498,7 @@ foreach ($mgId in $allMgIds) {
         }
     }
 
-    Write-ColorLine -Color Bold "Summary for '$mgId': $($assignments.Count) total, $rolesFixedCount role(s) fixed, $remediationStartedCount remediation(s) started, $remediationSkippedCount remediation(s) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
+    Write-ColorLine -Color $(if ($rolesFailedCount -gt 0) { 'Red' } else { 'Bold' }) "Summary for '$mgId': $($assignments.Count) total, $rolesFixedCount role(s) fixed, $rolesFailedCount role(s) FAILED to fix, $remediationStartedCount remediation(s) started, $remediationSkippedCount remediation(s) skipped (DoNotEnforce), $($noActionNeeded.Count) need no action"
 
     if ($needsAction.Count -gt 0) {
         Write-ColorLine -Color Yellow "-- [ACTION] Assignments needing action ($($needsAction.Count)) --"
@@ -515,6 +525,7 @@ foreach ($mgId in $allMgIds) {
         NeedsAction                 = $needsAction.Count
         RolesFixed                  = $rolesFixedCount
         RolesFixedDoNotEnforce      = $rolesFixedDoNotEnforceCount
+        RolesFailed                 = $rolesFailedCount
         RemediationStarted          = $remediationStartedCount
         RemediationSkipped          = $remediationSkippedCount
         NoActionNeeded              = $noActionNeeded.Count
@@ -538,6 +549,7 @@ $grandTotal                   = ($script:AllMgResults | Measure-Object -Property
 $grandNeedsAction             = ($script:AllMgResults | Measure-Object -Property NeedsAction -Sum).Sum
 $grandRolesFixed               = ($script:AllMgResults | Measure-Object -Property RolesFixed -Sum).Sum
 $grandRolesFixedDoNotEnforce   = ($script:AllMgResults | Measure-Object -Property RolesFixedDoNotEnforce -Sum).Sum
+$grandRolesFailed              = ($script:AllMgResults | Measure-Object -Property RolesFailed -Sum).Sum
 $grandRemediationStarted       = ($script:AllMgResults | Measure-Object -Property RemediationStarted -Sum).Sum
 $grandRemediationSkipped       = ($script:AllMgResults | Measure-Object -Property RemediationSkipped -Sum).Sum
 $grandNoAction                 = ($script:AllMgResults | Measure-Object -Property NoActionNeeded -Sum).Sum
@@ -565,10 +577,10 @@ if ($WhatIf) {
 }
 
 Write-Host ""
-Write-ColorLine -Color Bold "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $(Format-RolesFixedCount $grandRolesFixed $grandRolesFixedDoNotEnforce) role(s) fixed, $grandRemediationStarted remediation(s) started, $grandRemediationSkipped remediation(s) skipped (DoNotEnforce), $grandNoAction needed none ====="
+Write-ColorLine -Color $(if ($grandRolesFailed -gt 0) { 'Red' } else { 'Bold' }) "===== Overall sweep summary: $grandTotal assignment(s) across $($script:AllMgResults.Count) management group(s) - $(Format-RolesFixedCount $grandRolesFixed $grandRolesFixedDoNotEnforce) role(s) fixed, $grandRolesFailed role(s) FAILED to fix, $grandRemediationStarted remediation(s) started, $grandRemediationSkipped remediation(s) skipped (DoNotEnforce), $grandNoAction needed none ====="
 foreach ($mgResult in $script:AllMgResults) {
-    $flag = if ($mgResult.RolesFixed -gt 0 -or $mgResult.RemediationStarted -gt 0) { 'Yellow' } elseif ($mgResult.RemediationSkipped -gt 0) { 'Cyan' } else { 'Green' }
-    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $(Format-RolesFixedCount $mgResult.RolesFixed $mgResult.RolesFixedDoNotEnforce) roles fixed, $($mgResult.RemediationStarted) remediation started, $($mgResult.RemediationSkipped) skipped, $($mgResult.NoActionNeeded) none"
+    $flag = if ($mgResult.RolesFailed -gt 0) { 'Red' } elseif ($mgResult.RolesFixed -gt 0 -or $mgResult.RemediationStarted -gt 0) { 'Yellow' } elseif ($mgResult.RemediationSkipped -gt 0) { 'Cyan' } else { 'Green' }
+    Write-ColorLine -Color $flag "  $($mgResult.ManagementGroupId): $($mgResult.Total) total, $(Format-RolesFixedCount $mgResult.RolesFixed $mgResult.RolesFixedDoNotEnforce) roles fixed, $($mgResult.RolesFailed) FAILED, $($mgResult.RemediationStarted) remediation started, $($mgResult.RemediationSkipped) skipped, $($mgResult.NoActionNeeded) none"
 }
 
 # GitHub Actions Job Summary (the run page's "Summary" tab) - a short markdown table that's easy
@@ -609,12 +621,12 @@ if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     # decision itself is made identically whether -WhatIf is set or not.
     $rolesHeader = if ($WhatIf) { 'Roles Would Be Fixed' } else { 'Roles Fixed' }
     $remediationHeader = if ($WhatIf) { 'Remediation Would Start (non-compliant resources only)' } else { 'Remediation Started (non-compliant resources only)' }
-    $summaryLines.Add("| Management Group (Scope) | Total Assignments | $rolesHeader | $remediationHeader | Remediation Skipped (DoNotEnforce) | No Action Needed |")
-    $summaryLines.Add('|---|---|---|---|---|---|')
+    $summaryLines.Add("| Management Group (Scope) | Total Assignments | $rolesHeader | Roles Failed | $remediationHeader | Remediation Skipped (DoNotEnforce) | No Action Needed |")
+    $summaryLines.Add('|---|---|---|---|---|---|---|')
     foreach ($mgResult in $script:AllMgResults) {
-        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $(Format-RolesFixedCount $mgResult.RolesFixed $mgResult.RolesFixedDoNotEnforce) | $($mgResult.RemediationStarted) | $($mgResult.RemediationSkipped) | $($mgResult.NoActionNeeded) |")
+        $summaryLines.Add("| $($mgResult.ManagementGroupId) | $($mgResult.Total) | $(Format-RolesFixedCount $mgResult.RolesFixed $mgResult.RolesFixedDoNotEnforce) | $($mgResult.RolesFailed) | $($mgResult.RemediationStarted) | $($mgResult.RemediationSkipped) | $($mgResult.NoActionNeeded) |")
     }
-    $summaryLines.Add("| **Total** | **$grandTotal** | **$(Format-RolesFixedCount $grandRolesFixed $grandRolesFixedDoNotEnforce)** | **$grandRemediationStarted** | **$grandRemediationSkipped** | **$grandNoAction** |")
+    $summaryLines.Add("| **Total** | **$grandTotal** | **$(Format-RolesFixedCount $grandRolesFixed $grandRolesFixedDoNotEnforce)** | **$grandRolesFailed** | **$grandRemediationStarted** | **$grandRemediationSkipped** | **$grandNoAction** |")
 
     if ($grandNeedsAction -gt 0) {
         $summaryLines.Add('')
