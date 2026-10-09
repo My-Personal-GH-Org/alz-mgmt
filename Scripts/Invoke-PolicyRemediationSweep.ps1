@@ -560,6 +560,10 @@ $grandNoAction                 = ($script:AllMgResults | Measure-Object -Propert
 $grandSkippedItemsCount  = ($script:AllMgResults | ForEach-Object { $_.SkippedItems.Count } | Measure-Object -Sum).Sum
 
 Write-Host ""
+# Run-kind banner printed on its own line first, ahead of the result banner below - kept as a
+# distinct line (rather than folded into the result text) so it's the first thing visible even
+# if the result line itself gets truncated/wrapped in a narrow console.
+Write-ColorLine -Color Bold $(if ($WhatIf) { '##### RUN TYPE: DRY RUN (WhatIf) - no changes are made #####' } else { '##### RUN TYPE: ACTUAL RUN - changes ARE applied #####' })
 if ($WhatIf) {
     if ($script:WouldFixThisRun.Count -gt 0) {
         Write-ColorLine -Color Bold "===== DRY RUN (WhatIf): would apply $($script:WouldFixThisRun.Count) action(s) across $grandNeedsAction policy assignment(s) - no changes were made ====="
@@ -569,10 +573,10 @@ if ($WhatIf) {
     }
 } else {
     if ($script:FixesThisRun.Count -gt 0) {
-        Write-ColorLine -Color Bold "===== Fixed this run: $($script:FixesThisRun.Count) action(s) across $grandNeedsAction policy assignment(s) ====="
+        Write-ColorLine -Color Bold "===== ACTUAL RUN: fixed $($script:FixesThisRun.Count) action(s) across $grandNeedsAction policy assignment(s) ====="
         foreach ($fix in $script:FixesThisRun) { Write-ColorLine -Color Green "  * $fix" }
     } else {
-        Write-ColorLine -Color Bold "===== Nothing needed fixing this run ====="
+        Write-ColorLine -Color Bold "===== ACTUAL RUN: nothing needed fixing this run ====="
     }
 }
 
@@ -587,6 +591,10 @@ foreach ($mgResult in $script:AllMgResults) {
 # to scan without scrolling the raw logs. No-ops automatically outside GitHub Actions.
 if ($script:InGitHubActions -and $env:GITHUB_STEP_SUMMARY) {
     $summaryLines = New-Object System.Collections.Generic.List[string]
+    # Run type baked directly into the H1/H2 heading text (not just a later bullet) so it's the
+    # first thing visible on the Summary tab, before any scrolling - this is the one place in the
+    # summary that must never be ambiguous about whether real changes were made.
+    $summaryLines.Add($(if ($WhatIf) { '# DRY RUN (WhatIf) - no changes were made' } else { '# ACTUAL RUN - changes were applied' }))
     $summaryLines.Add('## Policy remediation sweep summary')
     $summaryLines.Add('')
 
