@@ -11,6 +11,11 @@ on:
         required: true
         default: '1.14.9'
         type: string
+      terraform_lock_id:
+        description: 'Optional: Terraform state Lock ID to force-unlock before planning'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   validate_and_plan:
@@ -23,3 +28,4 @@ jobs:
     with:
       root_module_folder_relative_path: '.'
       terraform_cli_version: ${{ inputs.terraform_cli_version }}
+      terraform_lock_id: ${{ inputs.terraform_lock_id }}
