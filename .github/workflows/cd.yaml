@@ -37,3 +37,5 @@ jobs:
       root_module_folder_relative_path: '.'
       terraform_cli_version: ${{ inputs.terraform_cli_version }}
       terraform_target: ${{ inputs.terraform_target }}
+
+      root_management_group_id: 'MG-AzLz-Acclrtr'
