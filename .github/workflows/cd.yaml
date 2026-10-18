@@ -37,5 +37,12 @@ jobs:
       root_module_folder_relative_path: '.'
       terraform_cli_version: ${{ inputs.terraform_cli_version }}
       terraform_target: ${{ inputs.terraform_target }}
-
-      root_management_group_id: 'MG-AzLz-Acclrtr'
+      # PolicySweep root-of-hierarchy fix needs the id the alz provider itself treats as
+      # root_management_group_id (data.alz_architecture.this), i.e. the MG that
+      # azapi_resource.policy_assignments/policy_role_assignments are actually created under -
+      # confirmed via Sandbox state that this is 'alz', not the externally-referenced parent MG
+      # below. Live-tested 2026-10-18: zero policy_assignment/policy_role_assignment resources
+      # exist anywhere under MG-AzLz-Acclrtr in Sandbox state, so the detection step could never
+      # have fired with that value - it only ever matches resources actually created under 'alz'.
+      # root_management_group_id: 'MG-AzLz-Acclrtr'  # Accelerator-set root_parent_management_group_id (external anchor MG 'alz' nests under) - NOT the policy hierarchy root, kept here for reference only
+      root_management_group_id: 'alz'
