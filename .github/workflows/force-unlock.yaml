@@ -4,13 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       lock_id:
-        description: 'Terraform state Lock ID (from the "Error acquiring the state lock" message)'
-        required: true
+        description: 'Terraform state Lock ID (from the "Error acquiring the state lock" message). Leave blank to skip.'
+        required: false
+        default: ''
         type: string
       terraform_cli_version:
         description: 'Terraform CLI Version'
         required: true
         default: '1.14.9'
+        type: string
+      state_rm_addresses:
+        description: 'Optional: space-separated Terraform resource addresses to remove from state (orphaned/no-longer-real resources only). Leave blank to skip.'
+        required: false
+        default: ''
         type: string
 
 jobs:
@@ -49,9 +55,17 @@ jobs:
           -backend-config="key=terraform.tfstate"
 
       - name: Terraform Force Unlock
+        if: inputs.lock_id != ''
         run: |
           terraform \
           -chdir="." \
           force-unlock \
           -force \
           "${{ inputs.lock_id }}"
+
+      - name: Terraform State Remove (orphaned resources only)
+        if: inputs.state_rm_addresses != ''
+        env:
+          STATE_RM_ADDRESSES: ${{ inputs.state_rm_addresses }}
+        run: |
+          terraform -chdir="." state rm $STATE_RM_ADDRESSES
