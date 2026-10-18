@@ -24,6 +24,11 @@ on:
         required: false
         default: ''
         type: string
+      import_resources:
+        description: 'One-time state reconciliation: skips the plan refresh (avoids the known slow/unrelated-resource full-refresh issue) so only terraform_target/import blocks are evaluated'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   plan_and_apply:
@@ -37,6 +42,7 @@ jobs:
       root_module_folder_relative_path: '.'
       terraform_cli_version: ${{ inputs.terraform_cli_version }}
       terraform_target: ${{ inputs.terraform_target }}
+      import_resources: ${{ inputs.import_resources }}
       # PolicySweep root-of-hierarchy fix needs the id the alz provider itself treats as
       # root_management_group_id (data.alz_architecture.this), i.e. the MG that
       # azapi_resource.policy_assignments/policy_role_assignments are actually created under -
